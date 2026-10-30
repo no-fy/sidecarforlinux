@@ -325,14 +325,18 @@ fn button_out_of_proximity_uses_synthetic_proximity() {
     assert_eq!(find(&f, EV_ABS, ABS_X), Some(2500));
     assert!(!m.in_proximity());
 
-    // While hovering, no proximity games.
+    // While hovering, no proximity games. Each button change is followed by
+    // its own 1-unit X move so KWin sends the client a tablet frame (it
+    // forwards buttons without one, and Qt only applies buttons on frames).
     m.sample(&s(PenPhase::Hover, 0.5, 0.5, 0.0));
     let f = m.click(BTN_STYLUS, None);
     assert_eq!(
         f,
         vec![
             vec![RawEvent::key(BTN_STYLUS, true)],
-            vec![RawEvent::key(BTN_STYLUS, false)]
+            vec![RawEvent::abs(ABS_X, 5001)],
+            vec![RawEvent::key(BTN_STYLUS, false)],
+            vec![RawEvent::abs(ABS_X, 5000)]
         ]
     );
     assert!(m.in_proximity());
@@ -400,7 +404,9 @@ fn default_gestures_double_tap_eraser_squeeze_button2() {
         out.pen_frames,
         vec![
             vec![RawEvent::key(BTN_STYLUS2, true)],
-            vec![RawEvent::key(BTN_STYLUS2, false)]
+            vec![RawEvent::abs(ABS_X, 5001)],
+            vec![RawEvent::key(BTN_STYLUS2, false)],
+            vec![RawEvent::abs(ABS_X, 5000)]
         ]
     );
 }
@@ -419,7 +425,13 @@ fn squeeze_hold_mode_and_keys() {
         &mut m,
         &gesture(GestureKind::Squeeze, GesturePhase::Began),
     );
-    assert_eq!(out.pen_frames, vec![vec![RawEvent::key(BTN_STYLUS, true)]]);
+    assert_eq!(
+        out.pen_frames,
+        vec![
+            vec![RawEvent::key(BTN_STYLUS, true)],
+            vec![RawEvent::abs(ABS_X, 5001)]
+        ]
+    );
     let out = gestures::handle(
         &cfg,
         &mut m,
@@ -431,7 +443,13 @@ fn squeeze_hold_mode_and_keys() {
         &mut m,
         &gesture(GestureKind::Squeeze, GesturePhase::Cancelled),
     );
-    assert_eq!(out.pen_frames, vec![vec![RawEvent::key(BTN_STYLUS, false)]]);
+    assert_eq!(
+        out.pen_frames,
+        vec![
+            vec![RawEvent::key(BTN_STYLUS, false)],
+            vec![RawEvent::abs(ABS_X, 5000)]
+        ]
+    );
 
     let out = gestures::handle(
         &cfg,

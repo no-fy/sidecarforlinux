@@ -419,11 +419,35 @@ impl PenMapper {
         }
         self.buttons[i].1 = down;
         frames.push(vec![RawEvent::key(code, down)]);
+        self.nudge(&mut frames);
         if !down && self.synthetic_prox && !self.buttons.iter().any(|b| b.1) {
             self.synthetic_prox = false;
             self.prox_out(&mut frames);
         }
         frames
+    }
+
+    /// KWin forwards stylus buttons to Wayland clients without a
+    /// `zwp_tablet_tool_v2.frame` (src/input.cpp, `sendButton` only), and Qt
+    /// applies button changes only on the next frame. KWin sends frames for
+    /// axis changes, so every button change is followed by a separate frame
+    /// moving X by one unit (0.01 mm) and back on the next change. Without
+    /// it, an instant click (press + release, no motion between) never
+    /// reaches Krita: found with a real Pencil Pro squeeze.
+    fn nudge(&mut self, frames: &mut Vec<Frame>) {
+        let Some(x) = self.last_abs[slot(ABS_X)] else {
+            return;
+        };
+        let nx = if x ^ 1 <= self.geo.x_max {
+            x ^ 1
+        } else {
+            x - 1
+        };
+        let mut f = Frame::new();
+        self.push_abs(&mut f, ABS_X, nx);
+        if !f.is_empty() {
+            frames.push(f);
+        }
     }
 
     /// Click = press + release.
