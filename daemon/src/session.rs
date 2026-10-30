@@ -221,6 +221,12 @@ where
         "paired with \"{peer_name}\" ({})",
         pairing::format_fingerprint(peer_fp)
     );
+    if matches!(ctx.pairing, PairingMode::Terminal) {
+        println!(
+            "Paired. This command keeps running as the pen session (Ctrl-C to stop).\n\
+             From now on, use `sidecard run` (or the user service) instead of `sidecard pair`."
+        );
+    }
     Ok(())
 }
 

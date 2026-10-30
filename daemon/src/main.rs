@@ -277,9 +277,25 @@ fn single_instance_lock() -> Result<std::fs::File> {
     let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if r != 0 {
         let pid = std::fs::read_to_string(&path).unwrap_or_default();
+        let pid = pid.trim();
+        // Which command holds it: often a `sidecard pair` that kept running.
+        let cmd = std::fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|b| {
+                b.split(|&c| c == 0)
+                    .filter(|a| !a.is_empty())
+                    .map(|a| String::from_utf8_lossy(a).into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let what = if cmd.is_empty() {
+            format!("pid {pid}")
+        } else {
+            format!("`{cmd}`, pid {pid}")
+        };
         bail!(
-            "another sidecard is already talking to the iPad (pid {}). Stop it first, e.g. `systemctl --user stop sidecard`",
-            pid.trim()
+            "another sidecard is already talking to the iPad ({what}). Stop it first: Ctrl-C in its terminal, \
+             `systemctl --user stop sidecard` if it's the user service, or `pkill -x sidecard`"
         );
     }
     use std::io::Write;
