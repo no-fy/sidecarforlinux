@@ -70,12 +70,19 @@ public struct DeviceIdentity {
         guard let secKey = SecKeyCreateWithData(key.x963Representation as CFData, attrs as CFDictionary, &cfErr) else {
             throw cfErr!.takeRetainedValue() as Error
         }
-        var status = SecItemAdd([
+        var keyItem: [CFString: Any] = [
             kSecClass: kSecClassKey,
             kSecValueRef: secKey,
             kSecAttrApplicationTag: ns.keyTag,
-            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ] as CFDictionary, nil)
+        ]
+        #if os(iOS)
+        // iOS: data-protection keychain, never synced or backed up off-device.
+        // (On macOS this attribute selects the data-protection keychain, which
+        // needs an entitlement unsigned test runners lack; the file keychain
+        // is used there instead.)
+        keyItem[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        #endif
+        var status = SecItemAdd(keyItem as CFDictionary, nil)
         guard status == errSecSuccess || status == errSecDuplicateItem else {
             throw IdentityError.keychain(status, "add key")
         }
