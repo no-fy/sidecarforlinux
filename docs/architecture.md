@@ -27,8 +27,8 @@ flowchart LR
     DISP["display<br/>KWin zkde_screencast virtual output"]
   end
 
-  PS <== "TLS 1.3 (input channel)" ==> TR
-  PS <== "TLS 1.3 (video channel)" ==> VC
+  TR == "TLS 1.3 input channel" ==> PS
+  VC == "TLS 1.3 video channel" ==> PS
   TR --> TLS --> SES --> MAP --> UI
   UI --> LI["libinput → KWin → Krita"]
   DISP -- PipeWire node --> VC
