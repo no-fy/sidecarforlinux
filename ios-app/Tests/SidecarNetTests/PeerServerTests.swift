@@ -17,6 +17,9 @@ final class RecordingDelegate: PeerServerDelegate {
     var pairingResults: [Bool] = []
     var haptics: [Haptic] = []
     var acceptPairing = true
+    var videoConfigs: [VideoConfig] = []
+    var videoFrames: [VideoFrame] = []
+    var videoEnds = 0
 
     func serverStatusChanged(_ status: PeerServer.Status) { statuses.append(status) }
     func pairingRequested(code: String, peerName: String, peerFingerprint: String, decide: @escaping (Bool) -> Void) {
@@ -27,6 +30,9 @@ final class RecordingDelegate: PeerServerDelegate {
     func hapticRequested(_ haptic: Haptic) { haptics.append(haptic) }
     func latencyReported(_ report: LatencyReport) {}
     func mappingReported(_ mapping: MappingInfo) {}
+    func videoConfigReceived(_ config: VideoConfig) { videoConfigs.append(config) }
+    func videoFrameReceived(_ frame: VideoFrame) { videoFrames.append(frame) }
+    func videoEnded() { videoEnds += 1 }
 
     var isConnected: Bool {
         if case .connected = statuses.last { return true }
@@ -122,8 +128,60 @@ final class PeerServerTests: XCTestCase {
         XCTFail("condition not met within \(timeout) s")
     }
 
-    func hello(trusts: Bool, name: String = "test-pc") -> Message {
-        .hello(Hello(channel: .input, trustsPeer: trusts, caps: Caps.gestures | Caps.haptics, sessionID: 42, name: name))
+    func hello(trusts: Bool, name: String = "test-pc", channel: Channel = .input, session: UInt64 = 42) -> Message {
+        .hello(Hello(channel: channel, trustsPeer: trusts, caps: Caps.gestures | Caps.haptics, sessionID: session,
+                     name: name))
+    }
+
+    func testVideoChannelOnlyForTheActiveSessionAndFramesReachTheUI() async throws {
+        let ipad = try DeviceIdentity.loadOrCreate(ipadNS)
+        let daemonID = try DeviceIdentity.loadOrCreate(daemonNS)
+        let trust = TrustStore(defaultsKey: "test.trust.\(UUID().uuidString)")
+        trust.add(daemonID.fingerprint, name: "pc")
+        let port = UInt16.random(in: 42000...48000)
+        let server = PeerServer(identity: ipad, trust: trust, usbPort: port)
+        let delegate = await MainActor.run { RecordingDelegate() }
+        await MainActor.run { server.delegate = delegate }
+        server.start(wifi: false)
+        try await waitUntil { !delegate.statuses.isEmpty }
+
+        // Video before any pen session: refused.
+        let early = TestDaemon(identity: daemonID, port: port)
+        try await waitUntilReady(early)
+        early.send(hello(trusts: true, channel: .video))
+        guard case .goodbye(.notPaired, _) = try await early.next() else { return XCTFail("expected refusal") }
+
+        // Pen session (session 42), then video with the wrong and the right id.
+        let pen = TestDaemon(identity: daemonID, port: port)
+        try await waitUntilReady(pen)
+        pen.send(hello(trusts: true))
+        guard case .helloAck(let ack) = try await pen.next() else { return XCTFail("expected HelloAck") }
+        XCTAssertNotEqual(ack.caps & Caps.video, 0, "app advertises video")
+        try await waitUntil { delegate.isConnected }
+
+        let wrong = TestDaemon(identity: daemonID, port: port)
+        try await waitUntilReady(wrong)
+        wrong.send(hello(trusts: true, channel: .video, session: 7))
+        guard case .goodbye(.notPaired, _) = try await wrong.next() else { return XCTFail("wrong session must be refused") }
+
+        let vid = TestDaemon(identity: daemonID, port: port)
+        try await waitUntilReady(vid)
+        vid.send(hello(trusts: true, channel: .video, session: 42))
+        guard case .helloAck = try await vid.next() else { return XCTFail("expected video HelloAck") }
+        let msgs = try VideoDecoderTests.messages()
+        for m in msgs { vid.send(m) }
+        try await waitUntil { delegate.videoConfigs.count == 1 && delegate.videoFrames.count == 8 }
+        guard case .videoFeedback(let fb) = try await vid.next(where: {
+            if case .videoFeedback = $0 { return true } else { return false }
+        }) else { return XCTFail("expected VideoFeedback") }
+        XCTAssertEqual(fb.frameID, 1)
+        XCTAssertTrue(server.hasActiveSession, "video must not replace the pen session")
+
+        // Ending the pen session closes the video channel.
+        pen.cancel()
+        try await waitUntil { delegate.videoEnds == 1 }
+        vid.cancel()
+        server.stop()
     }
 
     func testIdentityIsCreatedOnceAndIsAValidV3Certificate() throws {

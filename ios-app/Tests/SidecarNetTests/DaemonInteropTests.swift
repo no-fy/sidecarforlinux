@@ -133,5 +133,30 @@ final class DaemonInteropTests: XCTestCase {
         let repaired = await MainActor.run { delegate2.pairingCodes.isEmpty }
         XCTAssertTrue(repaired, "no pairing on reconnect")
         XCTAssertTrue(out2.contains("BTN_TOUCH 1"))
+
+        // ---- 3. video channel from the Rust daemon (file source), decoded here
+        let clip = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("protocol/vectors/test-176x144.h264")
+        server = PeerServer(identity: ipad, trust: trust, usbPort: port)
+        let delegate3 = await MainActor.run { RecordingDelegate() }
+        await MainActor.run { server.delegate = delegate3 }
+        server.start(wifi: false)
+        try await waitUntil { !delegate3.statuses.isEmpty }
+        let run3 = try launch(bin, ["run", "--once", "--dry-run", "--connect", "127.0.0.1:\(port)",
+                                    "--video", "file:\(clip.path)"],
+                              configDir: configDir, stdin: "")
+        try await waitUntil(15) { delegate3.videoFrames.count >= 16 }
+        server.stop()
+        try await waitExit(run3.process)
+        print("---- daemon output (video run) ----\n\(run3.text())")
+        let (configs, frames) = await MainActor.run { (delegate3.videoConfigs, delegate3.videoFrames) }
+        let decoder = VideoDecoder()
+        try decoder.configure(try XCTUnwrap(configs.first))
+        var decoded = 0
+        for f in frames.prefix(8) {
+            if try decoder.decode(f) != nil { decoded += 1 }
+        }
+        XCTAssertEqual(decoded, 8, "frames streamed by the Rust daemon decode with VideoToolbox")
     }
 }

@@ -13,6 +13,16 @@ public protocol PeerServerDelegate: AnyObject {
     func hapticRequested(_ haptic: Haptic)
     func latencyReported(_ report: LatencyReport)
     func mappingReported(_ mapping: MappingInfo)
+    /// Video channel (phase 2): parameter sets, then frames.
+    func videoConfigReceived(_ config: VideoConfig)
+    func videoFrameReceived(_ frame: VideoFrame)
+    func videoEnded()
+}
+
+public extension PeerServerDelegate {
+    func videoConfigReceived(_ config: VideoConfig) {}
+    func videoFrameReceived(_ frame: VideoFrame) {}
+    func videoEnded() {}
 }
 
 /// Builds TLS 1.3 parameters with our identity, requiring a client
@@ -100,7 +110,7 @@ public final class PeerServer: @unchecked Sendable {
     private var wifiPairingUntil: Date?
     private var wifiEnabled = true
     public var surface = SurfaceInfo(widthPt: 1180, heightPt: 820, scale: 2, pointsPerInch: 132)
-    public var capabilities: UInt32 = Caps.gestures | Caps.haptics | Caps.hover | Caps.roll | Caps.predicted
+    public var capabilities: UInt32 = Caps.gestures | Caps.haptics | Caps.hover | Caps.roll | Caps.predicted | Caps.video
 
     public init(identity: DeviceIdentity, trust: TrustStore, usbPort: UInt16 = SidecarProtocol.defaultPort) {
         self.identity = identity
@@ -284,8 +294,20 @@ public final class PeerServer: @unchecked Sendable {
         connections.removeAll { $0 === pc }
         if current === pc {
             current = nil
+            // The video channel belongs to the pen session.
+            for c in connections where c.isVideo { c.close(code: .normal, reason: "pen session ended") }
             reportWaitingIfIdle()
         }
+        if pc.isVideo && pc.videoStarted {
+            onMain { $0.videoEnded() }
+        }
+    }
+
+    /// A video channel is accepted only from the PC that owns the active,
+    /// authenticated pen session, with that session's id.
+    fileprivate func videoAllowed(fingerprint: [UInt8], sessionID: UInt64) -> Bool {
+        guard let cur = current, cur.isActive else { return false }
+        return cur.peerFingerprintBytes == fingerprint && cur.sessionID == sessionID
     }
 
     private func reportWaitingIfIdle() {
@@ -312,6 +334,7 @@ final class PeerConnection {
         case pairingAwaitNonce(nonce: [UInt8])
         case pairingAwaitDecisions(ours: Bool?, theirs: Bool?)
         case active
+        case video
         case closed
     }
 
@@ -323,6 +346,12 @@ final class PeerConnection {
     private var peerFingerprint: [UInt8] = []
     private var peerName = "PC"
     private var receivedAt: UInt64 = 0
+    fileprivate private(set) var sessionID: UInt64 = 0
+    fileprivate private(set) var videoStarted = false
+    fileprivate var peerFingerprintBytes: [UInt8] { peerFingerprint }
+    /// Which channel this connection carries (stays set after closing).
+    fileprivate private(set) var channel: Channel = .input
+    fileprivate var isVideo: Bool { channel == .video }
 
     init(connection: NWConnection, viaUSB: Bool, server: PeerServer) {
         self.connection = connection
@@ -413,12 +442,39 @@ final class PeerConnection {
             connection.cancel()
             server.connectionClosed(self)
 
+        case (.awaitingHello, .hello(let h)) where h.channel == .video:
+            guard h.major == SidecarProtocol.major, h.trustsPeer,
+                  server.trust.contains(peerFingerprint),
+                  server.videoAllowed(fingerprint: peerFingerprint, sessionID: h.sessionID) else {
+                close(code: .notPaired, reason: "video channel needs an active, paired pen session")
+                return
+            }
+            sessionID = h.sessionID
+            channel = .video
+            state = .video
+            send(.helloAck(HelloAck(trustsPeer: true, caps: server.capabilities, surface: server.surface,
+                                    deviceName: deviceName(), model: "iPad")))
+
+        case (.video, .videoConfig(let c)):
+            videoStarted = true
+            server.onMain { $0.videoConfigReceived(c) }
+        case (.video, .videoFrame(let f)):
+            videoStarted = true
+            server.onMain { $0.videoFrameReceived(f) }
+            send(.videoFeedback(VideoFeedback(frameID: f.frameID, requestKeyframe: false, receivedNs: receivedAt,
+                                              decodedNs: 0, displayedNs: 0)))
+        case (.video, .ping(let p)):
+            send(.pong(Pong(id: p.id, t1Ns: p.t1Ns, t2Ns: receivedAt, t3Ns: SessionClock.nowNs())))
+        case (.video, _):
+            break
+
         case (.awaitingHello, .hello(let h)):
             guard h.major == SidecarProtocol.major, h.channel == .input else {
                 close(code: .versionMismatch, reason: "iPad speaks protocol \(SidecarProtocol.major).\(SidecarProtocol.minor)")
                 return
             }
             peerName = h.name
+            sessionID = h.sessionID
             let weTrust = server.trust.contains(peerFingerprint)
             send(.helloAck(HelloAck(trustsPeer: weTrust, caps: server.capabilities, surface: server.surface,
                                     deviceName: deviceName(), model: "iPad")))

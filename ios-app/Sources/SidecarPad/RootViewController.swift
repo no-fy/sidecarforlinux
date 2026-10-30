@@ -98,6 +98,7 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
             root.setStatus("Starting…", ok: true)
         case .waiting(let wifi):
             connected = false
+            videoEnded()
             UIApplication.shared.isIdleTimerDisabled = false
             root.setStatus(wifi ? "Waiting for the PC (USB or Wi-Fi)…" : "Waiting for the PC over USB…", ok: true)
         case .handshaking(let usb):
@@ -142,6 +143,20 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
     }
 
     func mappingReported(_ mapping: MappingInfo) {}
+
+    func videoConfigReceived(_ config: VideoConfig) {
+        root.video.configure(config)
+        root.setVideoVisible(true)
+    }
+
+    func videoFrameReceived(_ frame: VideoFrame) {
+        root.video.enqueue(frame)
+    }
+
+    func videoEnded() {
+        root.video.reset()
+        root.setVideoVisible(false)
+    }
 }
 
 enum Settings {
@@ -162,6 +177,7 @@ enum Settings {
 final class RootViewController: UIViewController {
     weak var controller: AppController?
     let capture = PencilCaptureView(frame: .zero)
+    let video = VideoView(frame: .zero)
     private let statusLabel = UILabel()
     private let latencyLabel = UILabel()
     private let gestureLabel = UILabel()
@@ -176,6 +192,9 @@ final class RootViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        video.translatesAutoresizingMaskIntoConstraints = false
+        video.isHidden = true
+        view.addSubview(video)
         capture.translatesAutoresizingMaskIntoConstraints = false
         capture.sendPredicted = Settings.sendPredicted
         capture.showInk = Settings.showInk
@@ -202,6 +221,10 @@ final class RootViewController: UIViewController {
 
         let g = view.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
+            video.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            video.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            video.topAnchor.constraint(equalTo: view.topAnchor),
+            video.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             capture.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             capture.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             capture.topAnchor.constraint(equalTo: view.topAnchor),
@@ -240,6 +263,13 @@ final class RootViewController: UIViewController {
     func setStatus(_ text: String, ok: Bool) {
         statusLabel.text = text
         statusLabel.textColor = ok ? UIColor(white: 0.85, alpha: 1) : .systemOrange
+    }
+
+    /// With video, the pencil surface becomes transparent over the PC's screen.
+    func setVideoVisible(_ on: Bool) {
+        video.isHidden = !on
+        capture.backgroundColor = on ? .clear : UIColor(white: 0.08, alpha: 1)
+        statusLabel.alpha = on ? 0.6 : 1
     }
 
     func setLatency(_ text: String) {
