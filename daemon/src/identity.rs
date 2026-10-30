@@ -7,6 +7,7 @@ use sidecar_protocol::pairing::{self, Fingerprint};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct Identity {
     pub cert_der: Vec<u8>,
     /// PKCS#8 DER.

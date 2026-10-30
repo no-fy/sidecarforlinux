@@ -42,6 +42,7 @@ fn ctx(id: Identity, trust: TrustStore, pairing: PairingMode, sink: Shared) -> S
         max_duration: Some(Duration::from_secs(20)),
         max_samples: None,
         recorder: None,
+        on_active: None,
         stats: SessionStats::default(),
     }
 }
@@ -267,4 +268,68 @@ async fn daemon_with_other_identity_is_not_trusted() {
     // ...but the iPad doesn't trust B, so B (refuse mode) must not proceed.
     assert!(r.daemon.is_err());
     assert!(all_events(&sink).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn video_channel_streams_frames_next_to_the_pen_session() {
+    use sidecard::videochan::{self, VideoSource};
+    let daemon_id = Identity::generate("daemon").unwrap();
+    let fake_id = Arc::new(Identity::generate("ipad").unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let fid = fake_id.clone();
+    let fake = tokio::spawn(async move {
+        let mut trust = TrustStore::in_memory();
+        let opts = FakeOpts {
+            events: recording::demo(),
+            speed: 1.0,
+            ..Default::default()
+        };
+        fake_ipad::serve_one(&listener, &fid, &mut trust, &opts).await
+    });
+
+    let sink = Shared::default();
+    let mut c = ctx(
+        daemon_id.clone(),
+        TrustStore::in_memory(),
+        PairingMode::AutoAccept,
+        sink.clone(),
+    );
+    let (tx, mut rx) = tokio::sync::watch::channel(None);
+    c.on_active = Some(tx);
+    let conn = transport::connect_tcp(&addr).await.unwrap();
+    let (tls, fp) = transport::tls_connect(conn, &c.identity).await.unwrap();
+    let clip = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../protocol/vectors/test-176x144.h264");
+    let video = async {
+        rx.wait_for(|v| v.is_some()).await.unwrap();
+        let info = rx.borrow().clone().unwrap();
+        let conn = transport::connect_tcp(&addr).await?;
+        let src = VideoSource::File {
+            path: clip,
+            fps: 60,
+            width: 176,
+            height: 144,
+            repeat: true,
+        };
+        videochan::run_video(conn, &daemon_id, info.peer_fp, 42, "test-pc", src).await
+    };
+    let end = {
+        let input = session::run_session(tls, fp, 42, &mut c);
+        tokio::pin!(input);
+        tokio::pin!(video);
+        tokio::select! {
+            r = &mut input => r,
+            v = &mut video => panic!("video channel ended early: {v:?}"),
+        }
+    };
+    assert!(end.is_ok(), "{end:?}");
+    let st = fake.await.unwrap().unwrap();
+    assert_eq!(st.video.connections, 1, "{:?}", st.video);
+    assert_eq!(st.video.refused, 0);
+    assert!(st.video.configs >= 1);
+    assert!(st.video.frames >= 30, "{:?}", st.video);
+    assert!(st.video.keyframes >= 2, "{:?}", st.video);
+    // The pen kept working alongside.
+    assert!(c.stats.samples > 300);
 }

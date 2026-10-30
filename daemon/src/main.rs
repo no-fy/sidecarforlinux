@@ -12,7 +12,7 @@ use sidecard::sink::UinputSink;
 use sidecard::sink::{DeviceOptions, EventSink, RecordingSink};
 use sidecard::tablet::{PenMapper, TabletGeometry};
 use sidecard::transport::{self, Transport};
-use sidecard::{gestures, kde, usbmux};
+use sidecard::{gestures, kde, usbmux, videochan};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -47,6 +47,10 @@ struct ConnArgs {
     /// Print events instead of creating uinput devices.
     #[arg(long)]
     dry_run: bool,
+    /// Phase 2 (experimental) video: off | virtual | test-pattern | file:PATH
+    /// (default: [video] mode in config.toml).
+    #[arg(long)]
+    video: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -296,11 +300,124 @@ fn session_ctx(env: &Env, pairing: PairingMode, dry_run: bool) -> Result<Session
         max_duration: None,
         max_samples: None,
         recorder: None,
+        on_active: None,
         stats: SessionStats::default(),
     })
 }
 
-async fn one_session(env: &Env, t: &Transport, ctx: &mut SessionCtx) -> Result<SessionEnd> {
+#[derive(Clone)]
+struct VideoPlan {
+    mode: String,
+    encoder: videochan::Encoder,
+    kbps: u32,
+    fps: u32,
+}
+
+impl VideoPlan {
+    fn from(env: &Env, a: &ConnArgs) -> VideoPlan {
+        VideoPlan {
+            mode: a
+                .video
+                .clone()
+                .unwrap_or_else(|| env.cfg.video.mode.clone()),
+            encoder: if env.cfg.video.encoder == "x264" {
+                videochan::Encoder::X264
+            } else {
+                videochan::Encoder::Vaapi
+            },
+            kbps: env.cfg.video.bitrate_kbps,
+            fps: env.cfg.video.fps.max(1),
+        }
+    }
+}
+
+/// Opens the video channel once the pen session is up.
+async fn run_video_plan(
+    t: Transport,
+    port: u16,
+    identity: Identity,
+    info: session::ActiveInfo,
+    session_id: u64,
+    name: String,
+    plan: VideoPlan,
+) -> Result<videochan::VideoStats> {
+    use videochan::VideoSource;
+    let w = (info.surface.width_pt * info.surface.scale)
+        .round()
+        .max(16.0) as u32;
+    let h = (info.surface.height_pt * info.surface.scale)
+        .round()
+        .max(16.0) as u32;
+    // Keeps the virtual output alive (and its Wayland socket drained).
+    let mut keeper: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+    let source = match plan.mode.as_str() {
+        "test-pattern" => videochan::test_pattern(w, h, plan.fps),
+        m if m.starts_with("file:") => VideoSource::File {
+            path: PathBuf::from(&m[5..]),
+            fps: plan.fps,
+            width: w,
+            height: h,
+            repeat: true,
+        },
+        #[cfg(feature = "display")]
+        "virtual" => {
+            use sidecard::display::{VirtualOutput, VirtualOutputSpec};
+            let spec = VirtualOutputSpec {
+                width: w as i32,
+                height: h as i32,
+                scale: info.surface.scale as f64,
+                ..VirtualOutputSpec::ipad_air_11()
+            };
+            let out_name = spec.output_name();
+            let mut vo = tokio::task::spawn_blocking(move || {
+                VirtualOutput::create(spec, Duration::from_secs(5))
+            })
+            .await??;
+            let node = vo.node_id;
+            tracing::info!("virtual monitor {out_name} {w}x{h}, PipeWire node {node}");
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop2 = stop.clone();
+            std::thread::spawn(move || {
+                while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                    if !matches!(vo.poll(), Ok(true)) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                drop(vo);
+            });
+            keeper = Some(stop);
+            #[cfg(target_os = "linux")]
+            {
+                let nodes = info.dev_nodes.clone();
+                let out = out_name.clone();
+                if let Err(e) =
+                    tokio::task::spawn_blocking(move || kde::map_to_output(&nodes, &out)).await?
+                {
+                    tracing::warn!("could not map the pen to {out_name}: {e:#}");
+                }
+            }
+            videochan::pipewire(node, w, h, plan.fps, plan.encoder, plan.kbps)
+        }
+        m => bail!("unsupported video mode {m:?}"),
+    };
+    let res = async {
+        let conn = transport::connect(&t, port, &[]).await?;
+        videochan::run_video(conn, &identity, info.peer_fp, session_id, &name, source).await
+    }
+    .await;
+    if let Some(stop) = keeper {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    res
+}
+
+async fn one_session(
+    env: &Env,
+    t: &Transport,
+    ctx: &mut SessionCtx,
+    video: &VideoPlan,
+) -> Result<SessionEnd> {
     let prefer: Vec<String> = ctx
         .trust
         .devices
@@ -317,7 +434,45 @@ async fn one_session(env: &Env, t: &Transport, ctx: &mut SessionCtx) -> Result<S
         );
     }
     let session_id: u64 = rand::random();
-    session::run_session(tls, fp, session_id, ctx).await
+    if video.mode == "off" {
+        return session::run_session(tls, fp, session_id, ctx).await;
+    }
+    let (tx, mut rx) = tokio::sync::watch::channel(None);
+    ctx.on_active = Some(tx);
+    let (t2, port, identity, name, plan) = (
+        t.clone(),
+        env.cfg.connection.port,
+        ctx.identity.clone(),
+        ctx.name.clone(),
+        video.clone(),
+    );
+    let video_fut = async move {
+        rx.wait_for(|v| v.is_some())
+            .await
+            .map_err(|_| anyhow::anyhow!("pen session ended"))?;
+        let info = rx.borrow().clone().expect("checked");
+        run_video_plan(t2, port, identity, info, session_id, name, plan).await
+    };
+    let end = {
+        let input = session::run_session(tls, fp, session_id, ctx);
+        tokio::pin!(input);
+        tokio::pin!(video_fut);
+        let mut video_done = false;
+        loop {
+            tokio::select! {
+                r = &mut input => break r,
+                v = &mut video_fut, if !video_done => {
+                    video_done = true;
+                    match v {
+                        Ok(st) => tracing::info!("video channel ended after {} frames", st.frames_sent),
+                        Err(e) => tracing::warn!("video channel: {e:#}"),
+                    }
+                }
+            }
+        }
+    };
+    ctx.on_active = None;
+    end
 }
 
 async fn run_loop(
@@ -329,6 +484,7 @@ async fn run_loop(
 ) -> Result<()> {
     let _lock = single_instance_lock()?;
     let t = env.transport(&conn)?;
+    let video = VideoPlan::from(&env, &conn);
     let mut ctx = session_ctx(&env, pairing, conn.dry_run)?;
     if let Some(p) = &record {
         ctx.recorder = Some(Recorder::create(p)?);
@@ -341,7 +497,7 @@ async fn run_loop(
     let mut last_err: Option<String> = None;
     loop {
         let res = tokio::select! {
-            r = one_session(&env, &t, &mut ctx) => r,
+            r = one_session(&env, &t, &mut ctx, &video) => r,
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("interrupted");
                 return Ok(());
@@ -424,7 +580,8 @@ async fn latency(env: Env, conn: ConnArgs, duration: u64, json: Option<PathBuf>)
     let mut ctx = session_ctx(&env, PairingMode::Refuse, conn.dry_run)?;
     ctx.max_duration = Some(Duration::from_secs(duration));
     println!("Measuring for {duration} s: draw and hover on the iPad now.");
-    let end = one_session(&env, &t, &mut ctx).await?;
+    let video = VideoPlan::from(&env, &conn);
+    let end = one_session(&env, &t, &mut ctx, &video).await?;
     tracing::info!("session ended: {end:?}");
     print_latency(&ctx.stats);
     if let Some(p) = json {
@@ -581,9 +738,9 @@ async fn fake(
         let st = fake_ipad::serve_one(&listener, &id, &mut trust, &opts).await;
         match st {
             Ok(st) => println!(
-                "fake iPad: session done: paired={} samples={} gestures={} pongs={} haptics={} latency={:?} goodbye={:?}",
+                "fake iPad: session done: paired={} samples={} gestures={} pongs={} haptics={} latency={:?} goodbye={:?} video={:?}",
                 st.paired, st.samples_sent, st.gestures_sent, st.pings_answered, st.haptics.len(), st.last_latency, st.goodbye
-            ),
+            , st.video),
             Err(e) => println!("fake iPad: session error: {e:#}"),
         }
         if !repeat {

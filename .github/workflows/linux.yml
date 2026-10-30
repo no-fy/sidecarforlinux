@@ -16,8 +16,11 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Install evtest + libinput tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq evtest libinput-tools
+      - name: Install evtest + libinput tools + GStreamer (video test pattern)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq evtest libinput-tools gstreamer1.0-tools gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
@@ -46,6 +49,15 @@ jobs:
           sleep 1
           ./target/release/sidecard latency --dry-run --connect 127.0.0.1:47811 --duration 4 --json out/latency-loopback.json | tee out/latency-loopback.txt | grep -v '^Pen:'
           grep -q "paired with" out/pair-run.txt
+      - name: Video channel with a GStreamer x264 test pattern (fake iPad)
+        run: |
+          export SIDECAR_CONFIG_DIR=$PWD/out/pc
+          ./target/release/sidecard fake-ipad --listen 127.0.0.1:47811 --state-dir out/fake --speed 0.5 > out/video-fake.txt 2>&1 &
+          sleep 1
+          timeout 60 ./target/release/sidecard run --once --dry-run --connect 127.0.0.1:47811 --video test-pattern > /dev/null 2>&1
+          sleep 1
+          cat out/video-fake.txt | grep -o 'video=.*'
+          grep -Eq 'video=VideoRx \{ connections: 1, configs: [1-9][0-9]*, frames: [1-9][0-9]*' out/video-fake.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:

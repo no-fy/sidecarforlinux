@@ -45,8 +45,19 @@ pub struct SessionCtx {
     /// End the session once this many pen samples were injected (tests).
     pub max_samples: Option<u64>,
     pub recorder: Option<Recorder>,
+    /// Told once the session is authenticated (pairing done, tablet created):
+    /// the video channel waits for this.
+    pub on_active: Option<tokio::sync::watch::Sender<Option<ActiveInfo>>>,
     /// Filled during the session.
     pub stats: SessionStats,
+}
+
+/// What other channels need to know about an active input session.
+#[derive(Debug, Clone)]
+pub struct ActiveInfo {
+    pub surface: SurfaceInfo,
+    pub peer_fp: Fingerprint,
+    pub dev_nodes: Vec<std::path::PathBuf>,
 }
 
 pub struct SessionStats {
@@ -288,6 +299,14 @@ where
         area: ctx.mapper_cfg.area.map(|v| v as f32),
     }))
     .await?;
+
+    if let Some(tx) = &ctx.on_active {
+        let _ = tx.send(Some(ActiveInfo {
+            surface: ack.surface,
+            peer_fp,
+            dev_nodes: ctx.stats.dev_nodes.clone(),
+        }));
+    }
 
     let mut live = Live {
         sink,

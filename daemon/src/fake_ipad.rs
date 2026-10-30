@@ -56,6 +56,92 @@ pub struct FakeStats {
     pub last_latency: Option<LatencyReport>,
     pub mapping: Option<MappingInfo>,
     pub goodbye: Option<(GoodbyeCode, String)>,
+    pub video: VideoRx,
+}
+
+/// What the fake iPad received on the video channel.
+#[derive(Debug, Default, Clone)]
+pub struct VideoRx {
+    pub connections: u32,
+    pub configs: u32,
+    pub frames: u32,
+    pub keyframes: u32,
+    pub bytes: u64,
+    pub refused: u32,
+}
+
+/// Serve one video-channel connection: must come from the same daemon and
+/// carry the pen session's id.
+async fn serve_video(
+    tcp: tokio::net::TcpStream,
+    id: Identity,
+    daemon_fp: [u8; 32],
+    session_id: u64,
+    rx: std::sync::Arc<std::sync::Mutex<VideoRx>>,
+) -> Result<()> {
+    tcp.set_nodelay(true)?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls::server_config(&id)?);
+    let stream = acceptor.accept(tcp).await?;
+    let fp = tls::peer_fingerprint(stream.get_ref().1.peer_certificates())?;
+    let (r, w) = tokio::io::split(stream);
+    let mut rd = MsgReader::new(r);
+    let mut wr = MsgWriter::new(w);
+    let ok = match rd.expect().await? {
+        Message::Hello(h) => {
+            h.channel == Channel::Video && h.session_id == session_id && fp == daemon_fp
+        }
+        _ => false,
+    };
+    if !ok {
+        rx.lock().unwrap().refused += 1;
+        wr.send(&Message::Goodbye {
+            code: GoodbyeCode::NotPaired,
+            reason: "unknown video session".into(),
+        })
+        .await?;
+        return Ok(());
+    }
+    rx.lock().unwrap().connections += 1;
+    wr.send(&Message::HelloAck(HelloAck {
+        major: PROTOCOL_MAJOR,
+        minor: PROTOCOL_MINOR,
+        trusts_peer: true,
+        caps: caps::VIDEO,
+        surface: SurfaceInfo {
+            width_pt: 1180.0,
+            height_pt: 820.0,
+            scale: 2.0,
+            points_per_inch: 132.0,
+        },
+        device_name: "Fake iPad".into(),
+        model: "fake".into(),
+    }))
+    .await?;
+    while let Some(m) = rd.next().await? {
+        match m {
+            Message::VideoConfig(_) => rx.lock().unwrap().configs += 1,
+            Message::VideoFrame(f) => {
+                {
+                    let mut v = rx.lock().unwrap();
+                    v.frames += 1;
+                    v.keyframes += f.keyframe as u32;
+                    v.bytes += f.data.len() as u64;
+                }
+                let t = now_ns();
+                wr.send(&Message::VideoFeedback(VideoFeedback {
+                    frame_id: f.frame_id,
+                    request_keyframe: false,
+                    received_ns: t,
+                    decoded_ns: t,
+                    displayed_ns: t,
+                }))
+                .await?;
+            }
+            Message::Goodbye { .. } => break,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn ipad_now(o: &FakeOpts) -> u64 {
@@ -185,6 +271,8 @@ pub async fn serve_one(
         Some(at(end_ms))
     };
 
+    let video_rx = std::sync::Arc::new(std::sync::Mutex::new(VideoRx::default()));
+    let session_id = hello.session_id;
     loop {
         // Next thing to do: flush a batch, schedule an event, or finish.
         let next_event_at = o.events.get(idx).map(|e| at(e.t_ms()));
@@ -198,6 +286,17 @@ pub async fn serve_one(
         .min()
         .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
         tokio::select! {
+            // A second connection during the session = the video channel.
+            acc = listener.accept() => {
+                if let Ok((tcp, _)) = acc {
+                    let (idc, rx) = (id.clone(), video_rx.clone());
+                    tokio::spawn(async move {
+                        if let Err(e) = serve_video(tcp, idc, daemon_fp, session_id, rx).await {
+                            tracing::debug!("fake iPad video channel: {e:#}");
+                        }
+                    });
+                }
+            }
             m = rd.next() => {
                 let Some(m) = m? else { break };
                 match m {
@@ -266,6 +365,7 @@ pub async fn serve_one(
         }
     }
     wr.shutdown().await;
+    st.video = video_rx.lock().unwrap().clone();
     Ok(st)
 }
 

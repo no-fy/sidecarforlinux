@@ -43,6 +43,15 @@ haptic_on_tool_switch = true
 # Map the pen to this output via KWin's D-Bus API (e.g. "DP-1",
 # "Virtual-ipad"). Empty = leave KDE's own tablet settings alone.
 output = ""
+
+[video]
+# Phase 2 (experimental): off | virtual (KWin virtual monitor sized like the
+# iPad) | test-pattern | file:/path/to/clip.h264
+mode = "off"
+# vaapi (GPU, Mesa) | x264 (software)
+encoder = "vaapi"
+bitrate_kbps = 20000
+fps = 60
 "#;
 
 #[derive(Debug, Deserialize, Default)]
@@ -52,6 +61,27 @@ pub struct Config {
     pub tablet: TabletCfg,
     pub pencil: PencilCfg,
     pub kde: KdeCfg,
+    pub video: VideoCfg,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VideoCfg {
+    pub mode: String,
+    pub encoder: String,
+    pub bitrate_kbps: u32,
+    pub fps: u32,
+}
+
+impl Default for VideoCfg {
+    fn default() -> Self {
+        VideoCfg {
+            mode: "off".into(),
+            encoder: "vaapi".into(),
+            bitrate_kbps: 20000,
+            fps: 60,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +189,13 @@ impl Config {
             bail!("tablet.min_contact_pressure must be in [0, 0.5)");
         }
         self.gestures()?;
+        let m = self.video.mode.as_str();
+        if !(matches!(m, "off" | "virtual" | "test-pattern") || m.starts_with("file:")) {
+            bail!("video.mode must be off, virtual, test-pattern or file:PATH, got {m:?}");
+        }
+        if !matches!(self.video.encoder.as_str(), "vaapi" | "x264") {
+            bail!("video.encoder must be vaapi or x264");
+        }
         Ok(())
     }
 
