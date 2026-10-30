@@ -35,6 +35,19 @@ impl Action {
             ),
         })
     }
+
+    /// For logs: "BTN_STYLUS2", "eraser toggle", "keys [29, 44]".
+    pub fn describe(&self) -> String {
+        match self {
+            Action::None => "nothing".into(),
+            Action::ToggleEraser => "eraser toggle".into(),
+            Action::Button(BTN_STYLUS) => "BTN_STYLUS".into(),
+            Action::Button(BTN_STYLUS2) => "BTN_STYLUS2".into(),
+            Action::Button(BTN_STYLUS3) => "BTN_STYLUS3".into(),
+            Action::Button(c) => format!("button {c}"),
+            Action::Keys(k) => format!("keys {k:?}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

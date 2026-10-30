@@ -411,15 +411,21 @@ where
                             GestureKind::DoubleTap => &ctx.gesture_cfg.double_tap,
                             GestureKind::Squeeze => &ctx.gesture_cfg.squeeze,
                         };
-                        tracing::info!(
-                            "pencil {:?} {:?} (iPadOS preferred action {}) -> {:?}, {} pen / {} key events",
+                        let msg = format!(
+                            "pencil {:?} {:?} (iPadOS preferred action {}) -> {}, {} pen / {} key events",
                             g.kind,
                             g.phase,
                             g.preferred_action,
-                            action,
+                            action.describe(),
                             out.pen_frames.len(),
                             out.key_frames.len()
                         );
+                        // A squeeze sends ~15 Changed updates; keep those out of the info log.
+                        if g.phase == GesturePhase::Changed {
+                            tracing::debug!("{msg}");
+                        } else {
+                            tracing::info!("{msg}");
+                        }
                         live.sink.emit_all(DeviceKind::Pen, &out.pen_frames)?;
                         live.sink.emit_all(DeviceKind::Keys, &out.key_frames)?;
                         if let Some(tool) = out.tool_changed {

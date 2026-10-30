@@ -92,13 +92,15 @@ A hand review also caught and fixed a bug that tests couldn't have shown without
 
 | Piece | Status |
 |---|---|
-| Virtual monitor via KWin `zkde_screencast` (`sidecard display-probe`, `run --video virtual`) | **Built.** Protocol exchange tested against headless KWin 6.3.6; creating the output is **untested** (needs the DRM backend). |
-| Capture + encode (`gst-launch-1.0` subprocess: `pipewiresrc` → VA-API `vah264enc`, or x264) | x264 test-pattern pipeline **tested** (CI). The VA-API/PipeWire pipeline is **untested**. |
+| Virtual monitor via KWin `zkde_screencast` (`sidecard display-probe`, `run --video virtual`) | **Tested on your machine** (KWin 6.8.2): `Virtual-ipad` 2360×1640, PipeWire node created in about 100 ms. |
+| Capture + encode (`gst-launch-1.0` subprocess: `pipewiresrc` → VA-API `vah264enc`, or x264) | **Tested on your machine:** PipeWire → `vapostproc` → `vah264enc` (the default VA device), 20 Mbit/s CBR. x264 test pattern also tested in CI. |
 | Annex-B → AVCC access units, parameter sets | **Tested** (unit tests and the golden vector) |
 | Video channel (2nd TLS connection bound to the pen session) | **Tested** Rust↔Rust, Swift↔Swift, and Rust daemon ↔ iPad networking code on macOS |
-| iPad decode/display | VideoToolbox decode **tested** on macOS; the `AVSampleBufferDisplayLayer` view is **built but untested** |
-| Pen auto-mapped onto the virtual monitor | **Built** (KWin `outputName`); **untested** |
-| End-to-end video latency | **Not measured** |
+| iPad decode/display | **Tested on your iPad** ("worked amazing"). VideoToolbox decode also tested on macOS. |
+| Pen auto-mapped onto the virtual monitor | **Tested on your machine** (`KWin: mapped …/event19 to output Virtual-ipad`) |
+| Video transport latency (encoder out → iPad received) | **Tested:** p50 1.1–1.8 ms, p95 2.5–3.7 ms over 4546 frames (USB). Capture, encode, decode and display are not included. |
+| Glass-to-glass latency | **Not measured** (needs a camera) |
+| First attempt | Didn't work. After restarting the app and replugging the iPad, it worked. The cause is unknown; no log of the failed attempt yet. |
 
 ## Things you should know
 

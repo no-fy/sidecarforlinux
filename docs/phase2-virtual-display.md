@@ -108,7 +108,7 @@ The capture view on the iPad covers exactly the video rectangle, so pen coordina
 
 Status labels as in REPORT.md.
 
-1. **Virtual monitor: `sidecard display-probe`. Built; protocol exchange tested against KWin 6.3.6; creating the output is untested.**
+1. **Virtual monitor: `sidecard display-probe`. Tested on real hardware (2026-10-30, KWin 6.8.2, your MacBook Pro): `Virtual-ipad` 2360×1640 created.**
    - Creates the output with `zkde_screencast` and prints the PipeWire node id.
    - `--existing NAME` streams an existing output instead.
    - **Tested in the VM** against a headless KWin 6.3.6 (`kwin_wayland --virtual`, `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1`):
@@ -117,7 +117,7 @@ Status labels as in REPORT.md.
      - Screencasting needs OpenGL compositing, which the container (no `/dev/dri`) can't provide.
 2. **Encoder: GStreamer subprocess writing Annex-B to stdout (`daemon/src/videochan.rs`).**
    - **Tested in CI and the VM with the x264 test pattern:** 2360×1640 at 60 fps from GStreamer → our splitter → video channel → fake iPad. CI asserts frames arrive.
-   - **Built, untested:** the VA-API pipeline (`pipewiresrc path=<node> ! vapostproc ! vah264enc b-frames=0 rate-control=cbr target-usage=3 …`) and the PipeWire → x264 fallback.
+   - **Tested on real hardware:** the VA-API pipeline (`pipewiresrc path=<node> ! vapostproc ! vah264enc b-frames=0 rate-control=cbr target-usage=3 …`) on the default VA device of your Intel UHD 630 + Radeon Pro 5300M/5500M laptop. **Untested:** the PipeWire → x264 fallback.
    - **Why a subprocess** (DECISIONS D18): no GStreamer bindings in the daemon, and the encoder is easy to swap and debug with `gst-launch-1.0` alone.
 3. **Annex-B → AVCC access units + parameter sets (`daemon/src/video.rs`). Tested.**
    - Unit tests cover any chunking, H.264 and HEVC.
@@ -126,8 +126,8 @@ Status labels as in REPORT.md.
    - A second TLS connection carries `channel=Video` and the same `session_id`. The iPad accepts it only from the PC that owns the active pen session, and closes it when the pen session ends.
    - Tested daemon ↔ fake iPad (Rust) and Swift `PeerServer` ↔ TestDaemon.
    - **Tested against the real Rust daemon on macOS:** it streams the clip, and VideoToolbox decodes all 8 frames.
-5. **iPad display: `VideoView`, an `AVSampleBufferDisplayLayer` with DisplayImmediately, under the transparent pencil surface. Built, untested** (UIKit, needs an iPad).
-6. **`sidecard run --video virtual`. Built, untested.**
+5. **iPad display: `VideoView`, an `AVSampleBufferDisplayLayer` with DisplayImmediately, under the transparent pencil surface. Tested on your iPad Air.**
+6. **`sidecard run --video virtual`. Tested on real hardware.** Encoder out → iPad received: p50 about 1.2 ms over USB. The first attempt failed for an unknown reason; it worked after restarting the app and replugging.
    - Creates the virtual monitor at the iPad's pixel size (surface points × scale).
    - Pins the pen to it through KWin D-Bus.
    - Captures and encodes it, then streams it.

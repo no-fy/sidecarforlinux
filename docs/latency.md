@@ -42,6 +42,7 @@ With `--video`, the daemon logs **encoder output → iPad received** every 10 s,
 |---|---|---|---|---|---|
 | 2026-10-30 | CI ubuntu runner, **fake iPad** over TCP+TLS loopback, 240 Hz samples batched at 120 Hz | 5.34 / 9.91 / 10.22 ms | 0.08 / 0.10 ms | 0.09 ms | **tested** (CI artifact `uinput-evidence/latency-loopback.txt`) |
 | 2026-10-30 | MacBook Pro 16" (t2linux 7.2.11, KDE 6.8.2) + iPad Air (60 Hz display) + Pencil Pro over **USB** (usbmuxd), 30 s of drawing, 6786 samples in 1729 batches | 8.62 / 16.33 / 16.66 ms (max 17.19) | 0.68 / 1.00 ms | 0.69 ms | **tested** (your run) |
+| 2026-10-30 | Phase 2 video, same setup, `--video virtual`, VA-API H.264 2360×1640, 20 Mbit/s: **encoder out → iPad received** | p50 1.1–1.8 ms, p95 2.5–3.7 ms (4546 frames) | | 0.5–1.0 ms | **tested** (your run). Excludes capture, encode, decode and display. |
 | — | MacBook Pro 16" + iPad Air over **Wi-Fi** | *to be measured: MORNING.md step 9* | | | not measured |
 
 How to read the USB row:
