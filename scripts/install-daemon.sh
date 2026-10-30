@@ -11,6 +11,21 @@ install -Dm755 target/release/sidecard "$HOME/.local/bin/sidecard"
 echo "installed $HOME/.local/bin/sidecard ($("$HOME/.local/bin/sidecard" --version))"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "note: add ~/.local/bin to your PATH";; esac
 
+# Phase 2: on Plasma <= 6.7, KWin only lets programs use its screencast
+# protocol (virtual monitors) if a .desktop file with this key points at
+# their binary. Harmless on newer Plasma. No sudo, user-local only.
+DESKTOP="$HOME/.local/share/applications/sidecard.desktop"
+mkdir -p "$(dirname "$DESKTOP")"
+cat > "$DESKTOP" <<DESKEOF
+[Desktop Entry]
+Type=Application
+Name=sidecard (iPad pen tablet daemon)
+Exec=$HOME/.local/bin/sidecard run
+NoDisplay=true
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
+DESKEOF
+echo "installed $DESKTOP (KWin screencast permission for phase 2)"
+
 UNIT="$HOME/.config/systemd/user/sidecard.service"
 cat <<PLAN
 

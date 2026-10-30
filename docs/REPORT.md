@@ -61,7 +61,7 @@ Labels:
 | Item | Why | Next step |
 |---|---|---|
 | Real-device testing (iPad, Krita, KDE KCM, USB latency) | Only you have the hardware (expected) | MORNING.md |
-| Phase 2 code (virtual display) | The overnight plan said design first. The design is written ([phase2-virtual-display.md](phase2-virtual-display.md)); the protocol messages are specified and vector-tested, but there's no capture or encode code yet. | Start with milestone 1 (`sidecard display --dry-run`) once phase 1 works on your machine |
+| Phase 2 code (virtual display) | Phase 1 went green, so I started milestone 1: `sidecard display-probe` asks KWin for the virtual monitor.<br>• **Tested against a real headless KWin 6.3.6 in the VM:** the protocol works and KWin's replies are handled. KWin's headless backend can't create virtual outputs, and screencasting needs OpenGL, which the container lacks (no `/dev/dri`).<br>• **So creating the monitor is built but untested.**<br>• No capture or encode code yet. The design is in [phase2-virtual-display.md](phase2-virtual-display.md); the video messages are specified and vector-tested. | Run MORNING.md §10 on your machine, then PipeWire capture |
 | Glass-to-glass latency | Needs phase 2 plus a camera, or the loopback method in the design doc | Later |
 | `touchesEstimatedPropertiesUpdated` refinements | Deliberately not sent in v1 (latency first, DECISIONS D10) | A protocol minor version if pressure on stroke starts feels off |
 | Phase 3 (webcam, BT HID) | Out of tonight's scope | Later |
@@ -78,4 +78,4 @@ Labels:
 - **The default gesture mapping** is double-tap = eraser toggle and squeeze = BTN_STYLUS2 click (right button → Krita pop-up palette). Change it in `[pencil]`.
 - **Possible security issues in Tether**, found while reading its code (shared fingerprint variable, share extension not verifying the pin): see [tether.md](tether.md). Not reported upstream; your call.
 - **A small leak during the overnight research:** one of the research steps sent your email address in the User-Agent header of a single crates.io version lookup (an HTTP request to crates.io's public API). Nothing else left the VM.
-- **What the VM ran:** git, gh, Rust, evtest, libinput-tools, shellcheck, librsvg (for the icon). No xtool, iOS SDK or Xcode was installed, and no Apple credentials exist anywhere in this repo or in CI.
+- **What the VM ran:** git, gh, Rust, evtest, libinput-tools, shellcheck, librsvg (for the icon), and a headless KWin 6.3.6 with PipeWire (Debian packages) for the phase 2 probe. No xtool, iOS SDK or Xcode was installed, and no Apple credentials exist anywhere in this repo or in CI.

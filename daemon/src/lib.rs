@@ -6,6 +6,8 @@
 pub mod clock;
 pub mod config;
 pub mod conn;
+#[cfg(feature = "display")]
+pub mod display;
 pub mod events;
 pub mod fake_ipad;
 pub mod gestures;

@@ -124,6 +124,26 @@ enum Cmd {
     Unpair { who: String },
     /// Print an example config file.
     ExampleConfig,
+    /// Phase 2 probe: ask KWin for a virtual monitor sized like the iPad,
+    /// print its PipeWire node, keep it for a while, optionally pin the pen.
+    #[cfg(feature = "display")]
+    DisplayProbe {
+        #[arg(long, default_value_t = 2360)]
+        width: i32,
+        #[arg(long, default_value_t = 1640)]
+        height: i32,
+        #[arg(long, default_value_t = 2.0)]
+        scale: f64,
+        #[arg(long, default_value = "ipad")]
+        name: String,
+        /// Keep the output this many seconds (0 = until Ctrl-C).
+        #[arg(long, default_value_t = 30)]
+        seconds: u64,
+        /// Instead of creating a virtual monitor, stream this existing
+        /// output (testing; e.g. "Virtual-0" in a headless KWin).
+        #[arg(long)]
+        existing: Option<String>,
+    },
 }
 
 fn init_logging(v: u8) {
@@ -579,6 +599,59 @@ fn info(env: &Env) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "display")]
+async fn display_probe(
+    width: i32,
+    height: i32,
+    scale: f64,
+    name: String,
+    seconds: u64,
+    existing: Option<String>,
+) -> Result<()> {
+    use sidecard::display::{CursorMode, VirtualOutput, VirtualOutputSpec};
+    let spec = VirtualOutputSpec {
+        name,
+        width,
+        height,
+        scale,
+        ..VirtualOutputSpec::ipad_air_11()
+    };
+    let out_name = existing.clone().unwrap_or_else(|| spec.output_name());
+    let mut vo = tokio::task::spawn_blocking(move || match existing {
+        Some(o) => VirtualOutput::stream_existing(&o, CursorMode::Embedded, Duration::from_secs(5)),
+        None => VirtualOutput::create(spec, Duration::from_secs(5)),
+    })
+    .await??;
+    println!(
+        "virtual output {out_name}: {}x{} @ scale {} (zkde_screencast v{}), PipeWire node {}",
+        vo.spec.width, vo.spec.height, vo.spec.scale, vo.protocol_version, vo.node_id
+    );
+    println!(
+        "check: kscreen-doctor -o | grep -A3 {out_name}   |   pw-cli info {}",
+        vo.node_id
+    );
+    println!("pin the pen to it: [kde] output = \"{out_name}\" in config.toml");
+    let deadline =
+        (seconds > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(seconds));
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                if !vo.poll()? {
+                    println!("KWin closed the virtual output");
+                    break;
+                }
+                if deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
+                    break;
+                }
+            }
+        }
+    }
+    drop(vo);
+    println!("virtual output closed");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
@@ -664,6 +737,25 @@ fn main() -> Result<()> {
             Cmd::ExampleConfig => {
                 print!("{}", config::EXAMPLE);
                 Ok(())
+            }
+            #[cfg(feature = "display")]
+            Cmd::DisplayProbe {
+                width,
+                height,
+                scale,
+                name,
+                seconds,
+                existing,
+            } => {
+                display_probe(
+                    *width,
+                    *height,
+                    *scale,
+                    name.clone(),
+                    *seconds,
+                    existing.clone(),
+                )
+                .await
             }
         }
     })

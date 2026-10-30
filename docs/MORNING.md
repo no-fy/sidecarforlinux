@@ -181,7 +181,20 @@ Paste the printed report. It goes into [latency.md](latency.md).
 2. Run `sidecard pair --transport wifi`.
 3. Then `sidecard latency --transport wifi --duration 30` and paste it.
 
-## 10. Optional: collaboration
+## 10. Optional: phase 2 probe (1 min) → **paste back**
+
+This asks KWin for a virtual monitor sized like the iPad Air 11" and keeps it for 30 s. Nothing is streamed to the iPad yet.
+
+```bash
+sidecard display-probe --seconds 30 &
+sleep 3; kscreen-doctor -o | grep -A4 Virtual-ipad
+```
+
+Expected: a line `virtual output Virtual-ipad: 2360x1640 @ scale 2 ... PipeWire node N`, and a `Virtual-ipad` output in System Settings → Display while it runs.
+- For the 13" model: `--width 2732 --height 2048`.
+- If it says KWin did not offer the protocol, check that `~/.local/share/applications/sidecard.desktop` exists (`scripts/install-daemon.sh` writes it), then log out and back in.
+
+## 11. Optional: collaboration
 
 InkLink (<https://github.com/RakeRaven/inklink>, MIT, 2 days old) has the same goal; see DECISIONS D1. If you want to propose joining forces, that's your call; I didn't contact anyone.
 

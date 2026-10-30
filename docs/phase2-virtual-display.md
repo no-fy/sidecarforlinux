@@ -1,6 +1,6 @@
 # Phase 2: virtual display (design)
 
-Status: **design only, no code yet**. The wire messages are already specified in [protocol.md §6](protocol.md#6-messages-video-channel-phase-2-specified-not-implemented) and covered by the golden vectors. The research with sources is in [research/kde-display-encode.md](research/kde-display-encode.md).
+Status: **design + milestone 1 probe**. Only `sidecard display-probe` exists: it asks KWin for the virtual monitor and prints its PipeWire node. The wire messages are already specified in [protocol.md §6](protocol.md#6-messages-video-channel-phase-2-specified-not-implemented) and covered by the golden vectors. The research with sources is in [research/kde-display-encode.md](research/kde-display-encode.md).
 
 ## Goal
 
@@ -99,7 +99,13 @@ The capture view on the iPad covers exactly the video rectangle, so pen coordina
 
 ## 5. Milestones
 
-1. `sidecard display --dry-run`: create the virtual output with the zkde protocol, connect PipeWire, print the negotiated format and frame timestamps. Test: the output appears in `kscreen-doctor -o`.
+1. **`sidecard display-probe` (written):** creates the virtual output with `zkde_screencast` and prints the PipeWire node id. `--existing NAME` streams an existing output instead.
+   - **What was tested** in the VM against a headless KWin 6.3.6 (`kwin_wayland --virtual`, `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1`):
+     - The probe binds the protocol (KWin offers v5; we use v4) and sends `stream_virtual_output_with_description`.
+     - KWin's `failed` event is reported properly: "Could not find output". KWin's *virtual* backend can't create outputs; that's implemented by the DRM backend you run on real hardware.
+     - `stream_output` of the headless output fails with "OpenGL compositing is required for screencasting". The container has no `/dev/dri`, so KWin falls back to QPainter.
+   - **Creating the monitor and the PipeWire node therefore needs your machine** (MORNING.md §10).
+   - **Next:** connect PipeWire (pipewire-rs) and print the negotiated format and frame timestamps.
 2. Encode to a file (`.h264`); play it with `ffplay`. Measure encode time per frame.
 3. Video channel to the fake iPad (Rust), round-trip VideoFeedback; then the iPad app with `AVSampleBufferDisplayLayer`.
 4. Pen auto-mapping, cursor overlay, keyframe on request, reconnect.
