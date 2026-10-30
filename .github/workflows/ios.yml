@@ -34,8 +34,13 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
-      - name: SidecarNet tests (macOS)
-        run: cd ios-app && swift test
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the Rust daemon for macOS (dry-run only, no uinput)
+        run: cargo build --release -p sidecard --no-default-features
+      - name: SidecarNet tests + Rust daemon <-> Swift PeerServer interop (macOS)
+        run: |
+          export SIDECARD_BIN="$GITHUB_WORKSPACE/target/release/sidecard"
+          cd ios-app && swift test
 
   ipa:
     name: Unsigned .ipa (xtool)

@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Real /dev/uinput test: create the tablet, replay the synthetic recording
 //! through the mapper, read the events back from /dev/input/eventN and check
 //! the device capabilities the kernel reports.

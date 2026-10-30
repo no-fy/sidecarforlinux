@@ -143,6 +143,7 @@ mod tests {
             Action::Button(BTN_STYLUS2)
         );
         assert_eq!(Action::parse("none").unwrap(), Action::None);
+        #[cfg(target_os = "linux")]
         assert_eq!(
             Action::parse("keys:ctrl+z").unwrap(),
             Action::Keys(vec![29, 44])

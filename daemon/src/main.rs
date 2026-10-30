@@ -7,7 +7,9 @@ use sidecard::fake_ipad::{self, FakeOpts};
 use sidecard::identity::{Identity, TrustStore};
 use sidecard::recording::{self, RecEvent, Recorder};
 use sidecard::session::{self, PairingMode, SessionCtx, SessionEnd, SessionStats, SinkFactory};
-use sidecard::sink::{DeviceOptions, EventSink, RecordingSink, UinputSink};
+#[cfg(target_os = "linux")]
+use sidecard::sink::UinputSink;
+use sidecard::sink::{DeviceOptions, EventSink, RecordingSink};
 use sidecard::tablet::{PenMapper, TabletGeometry};
 use sidecard::transport::{self, Transport};
 use sidecard::{gestures, kde, usbmux};

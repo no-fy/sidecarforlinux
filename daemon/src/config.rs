@@ -211,6 +211,7 @@ mod tests {
         assert!(c.keyboard_keys().is_empty());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn keys_and_validation() {
         let c: Config = toml::from_str("[pencil]\ndouble_tap = \"keys:ctrl+z\"\n").unwrap();

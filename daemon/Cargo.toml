@@ -11,7 +11,6 @@ rust-version.workspace = true
 sidecar-protocol = { path = "../protocol/rust" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-evdev = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
@@ -30,6 +29,11 @@ libc = "0.2"
 # Phase 2 (virtual display). Pure-Rust Wayland client, no system libraries.
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols-plasma = { version = "0.3", features = ["client"], optional = true }
+
+# uinput is Linux-only; on other systems (macOS CI interop tests) the daemon
+# builds with --dry-run sinks only.
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
 
 [features]
 default = ["display"]

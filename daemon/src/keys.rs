@@ -1,6 +1,7 @@
 //! Keyboard shortcut parsing for the companion keyboard device.
 
 use anyhow::{anyhow, Result};
+#[cfg(target_os = "linux")]
 use std::str::FromStr;
 
 /// Parses "CTRL+SHIFT+Z" / "KEY_LEFTCTRL+KEY_Z" into Linux key codes.
@@ -36,12 +37,20 @@ pub fn parse_key(name: &str) -> Result<u16> {
     } else {
         format!("KEY_{up}")
     };
-    evdev::KeyCode::from_str(&full)
-        .map(|k| k.code())
-        .map_err(|_| anyhow!("unknown key {name:?} (tried {full})"))
+    key_code(&full).ok_or_else(|| anyhow!("unknown key {name:?} (tried {full})"))
 }
 
-#[cfg(test)]
+#[cfg(target_os = "linux")]
+fn key_code(full: &str) -> Option<u16> {
+    evdev::KeyCode::from_str(full).ok().map(|k| k.code())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn key_code(_full: &str) -> Option<u16> {
+    None // keyboard shortcuts need uinput (Linux)
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     #[test]

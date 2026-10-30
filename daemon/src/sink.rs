@@ -59,11 +59,13 @@ pub struct DeviceOptions {
     pub keyboard_keys: Vec<u16>,
 }
 
+#[cfg(target_os = "linux")]
 pub struct UinputSink {
     pen: evdev::uinput::VirtualDevice,
     keys: Option<evdev::uinput::VirtualDevice>,
 }
 
+#[cfg(target_os = "linux")]
 fn abs(code: u16, min: i32, max: i32, res: i32) -> evdev::UinputAbsSetup {
     evdev::UinputAbsSetup::new(
         evdev::AbsoluteAxisCode(code),
@@ -71,6 +73,7 @@ fn abs(code: u16, min: i32, max: i32, res: i32) -> evdev::UinputAbsSetup {
     )
 }
 
+#[cfg(target_os = "linux")]
 impl UinputSink {
     pub fn create(geo: TabletGeometry, opts: &DeviceOptions) -> Result<Self> {
         use evdev::{AttributeSet, BusType, InputId, KeyCode, PropType};
@@ -145,6 +148,7 @@ impl UinputSink {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl EventSink for UinputSink {
     fn emit(&mut self, dev: DeviceKind, frame: &[RawEvent]) -> io::Result<()> {
         let d = match dev {

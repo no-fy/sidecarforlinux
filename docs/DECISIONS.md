@@ -170,6 +170,10 @@ Research notes with sources for everything below are in [`docs/research/`](resea
 
 ## D15. Tests without an iPad
 
+- **iPad networking split out:** the app's networking layer (`SidecarNet`: PeerServer, keychain identity, trust store, pairing state machine) is a separate target without UIKit.
+  - On the macOS runner it is tested against Apple's real TLS stack: a Network.framework client plays the daemon.
+  - It is also tested against the **real Rust daemon binary**, built for macOS in dry-run mode because uinput is Linux-only. This covers rustls ↔ Network.framework mutual TLS, the same 6-digit code computed in Rust and Swift, and pen samples injected.
+
 - **Fake iPad** (`sidecard fake-ipad`): implements the iPad's side of the protocol, including TLS, pairing and Pong, and replays JSONL recordings.
 - **Synthetic recording** (`sidecard gen-demo`): exercises every signal.
 - **Your own recordings:** `sidecard run --record file.jsonl` records real sessions, which become regression fixtures.

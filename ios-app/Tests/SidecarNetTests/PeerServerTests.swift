@@ -207,7 +207,8 @@ final class PeerServerTests: XCTestCase {
         guard case .goodbye(let code1, _) = try await d.next(where: { if case .goodbye = $0 { return true } else { return false } })
         else { return XCTFail("old session should be told it was replaced") }
         XCTAssertEqual(code1, .busy)
-        XCTAssertEqual(delegate.pairingCodes.count, 1, "no second pairing")
+        let pairings = await MainActor.run { delegate.pairingCodes.count }
+        XCTAssertEqual(pairings, 1, "no second pairing")
 
         d.cancel()
         d2.cancel()
