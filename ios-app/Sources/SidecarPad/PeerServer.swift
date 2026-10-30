@@ -91,6 +91,10 @@ final class PeerServer {
     let trust: TrustStore
     private var usbListener: NWListener?
     private var wifiListener: NWListener?
+    /// Every open connection (strong refs: NWConnection handlers only hold
+    /// weak references to their PeerConnection).
+    private var connections: [PeerConnection] = []
+    /// The authenticated, active session (pen samples go here).
     private var current: PeerConnection?
     private var wifiPairingUntil: Date?
     private var wifiEnabled = true
@@ -135,7 +139,8 @@ final class PeerServer {
             self.wifiListener?.cancel()
             self.usbListener = nil
             self.wifiListener = nil
-            self.current?.close(code: .shuttingDown, reason: "iPad app went to the background")
+            for c in self.connections { c.close(code: .shuttingDown, reason: "iPad app stopped") }
+            self.connections.removeAll()
             self.current = nil
         }
     }
@@ -158,7 +163,8 @@ final class PeerServer {
     func replaceIdentity(_ id: DeviceIdentity) {
         queue.async {
             self.identity = id
-            self.current?.close(code: .normal, reason: "identity reset")
+            for c in self.connections { c.close(code: .normal, reason: "identity reset") }
+            self.connections.removeAll()
             self.current = nil
             self.usbListener?.cancel()
             self.wifiListener?.cancel()
@@ -248,21 +254,32 @@ final class PeerServer {
     }
 
     private func accept(_ c: NWConnection, viaUSB: Bool) {
-        // The newest authenticated connection wins (a daemon reconnecting
-        // after a cable wiggle shouldn't wait for the old socket to time out).
         let pc = PeerConnection(connection: c, viaUSB: viaUSB, server: self)
+        connections.append(pc)
+        if connections.count > 8 {
+            // Don't let a flood of half-open connections pile up.
+            connections.first?.close(code: .busy, reason: "too many connections")
+        }
         pc.start()
     }
 
     fileprivate func connectionReady(_ pc: PeerConnection) {
+        if current == nil { report(.handshaking(viaUSB: pc.viaUSB)) }
+    }
+
+    /// A connection finished hello/pairing. The newest *authenticated*
+    /// session wins, so a daemon reconnecting after a cable wiggle doesn't
+    /// wait for the old socket to time out, while an unauthenticated local
+    /// app can't kick the PC off.
+    fileprivate func connectionActivated(_ pc: PeerConnection) {
         if let old = current, old !== pc {
             old.close(code: .busy, reason: "replaced by a newer connection")
         }
         current = pc
-        report(.handshaking(viaUSB: pc.viaUSB))
     }
 
     fileprivate func connectionClosed(_ pc: PeerConnection) {
+        connections.removeAll { $0 === pc }
         if current === pc {
             current = nil
             reportWaitingIfIdle()
@@ -473,6 +490,7 @@ final class PeerConnection {
 
     private func activate() {
         state = .active
+        server.connectionActivated(self)
         server.report(.connected(peer: peerName, viaUSB: viaUSB))
     }
 
