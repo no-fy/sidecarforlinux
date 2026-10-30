@@ -226,16 +226,24 @@ fn sink_factory(dry_run: bool, kde_output: String) -> SinkFactory {
                     print: true,
                 }));
             }
-            let mut s = UinputSink::create(geo, opts)?;
-            if !kde_output.is_empty() {
-                let nodes = s.dev_nodes();
-                if let Err(e) = kde::map_to_output(&nodes, &kde_output) {
-                    tracing::warn!(
-                        "could not map the pen to output {kde_output:?} via KWin: {e:#}"
-                    );
+            #[cfg(target_os = "linux")]
+            {
+                let mut s = UinputSink::create(geo, opts)?;
+                if !kde_output.is_empty() {
+                    let nodes = s.dev_nodes();
+                    if let Err(e) = kde::map_to_output(&nodes, &kde_output) {
+                        tracing::warn!(
+                            "could not map the pen to output {kde_output:?} via KWin: {e:#}"
+                        );
+                    }
                 }
+                Ok(Box::new(s))
             }
-            Ok(Box::new(s))
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (opts, &kde_output);
+                bail!("uinput is Linux-only; use --dry-run on this system")
+            }
         },
     )
 }
