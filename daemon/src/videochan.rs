@@ -145,6 +145,14 @@ pub struct VideoStats {
     pub latency_samples: u32,
 }
 
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Messages produced by a source, re-stamped with the daemon clock.
 async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
     match source {
@@ -295,7 +303,9 @@ pub async fn run_video(
     tracing::info!("video channel open");
 
     let (tx, mut rx) = mpsc::channel::<Message>(8);
-    let mut producer = tokio::spawn(produce(source, tx));
+    // Aborted on drop too: if this future is cancelled (pen session ended),
+    // the encoder task and its gst-launch child (kill_on_drop) must go with it.
+    let mut producer = AbortOnDrop(tokio::spawn(produce(source, tx)));
     let mut stats = VideoStats::default();
     // frame_id -> daemon time the frame left the encoder
     let mut sent_at: std::collections::VecDeque<(u32, u64)> = std::collections::VecDeque::new();
@@ -306,7 +316,7 @@ pub async fn run_video(
             m = rx.recv() => {
                 let Some(m) = m else {
                     // The source ended: report why.
-                    break match (&mut producer).await {
+                    break match (&mut producer.0).await {
                         Ok(Err(e)) => Err(e),
                         _ => Ok(()),
                     };
@@ -352,7 +362,7 @@ pub async fn run_video(
             }
         }
     };
-    producer.abort();
+    producer.0.abort();
     wr.shutdown().await;
     let r = lat.report(None);
     stats.transport_p50_us = r.p50_us;

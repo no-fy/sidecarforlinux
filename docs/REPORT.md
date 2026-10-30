@@ -101,6 +101,9 @@ A hand review also caught and fixed a bug that tests couldn't have shown without
 | Video transport latency (encoder out → iPad received) | **Tested:** p50 1.1–1.8 ms, p95 2.5–3.7 ms over 4546 frames (USB). Capture, encode, decode and display are not included. |
 | Glass-to-glass latency | **Not measured** (needs a camera) |
 | First attempt | Didn't work. After restarting the app and replugging the iPad, it worked. The cause is unknown; no log of the failed attempt yet. |
+| Mirroring | **Tested:** System Settings → Display → set `Virtual-ipad` as **"Replica of"** the laptop screen. KWin does the mirroring, so no separate mode is needed. |
+| Wi-Fi (pen + video) | **Tested** by you: "everything works great". Latency not measured. |
+| Bugs found on your machine, fixed in the daemon/app (**untested on your machine**) | • Switching the display to replica killed the video until `sidecard` restarted. The video now restarts by itself (1 s, backing off to 10 s), also when KWin closes the monitor's stream; restart after an encoder kill is tested in the VM.<br>• Turning the iPad off and on added a second `Virtual-ipad`. The monitor is now removed whenever the pen session ends, and the encoder process is killed (tested in the VM).<br>• With "Show local ink" off, the last ink stroke flashed after every lift (iPad app fix: needs reinstalling the app).<br>• Ctrl-C was ignored while waiting to reconnect (tested in the VM). |
 
 ## Things you should know
 

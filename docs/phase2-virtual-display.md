@@ -132,7 +132,8 @@ Status labels as in REPORT.md.
    - Pins the pen to it through KWin D-Bus.
    - Captures and encodes it, then streams it.
    - MORNING.md §10 has the commands.
-7. **Still to do:**
+7. **Mirroring: done by KDE.** In System Settings → Display, set `Virtual-ipad` as "Replica of" another screen. Tested on your machine. If the video drops while you change display settings, the daemon restarts the channel by itself.
+8. **Still to do:**
    - cursor as metadata, drawn on the iPad (currently embedded in the frames);
    - keyframe on request (needs encoder control);
    - VideoFeedback-based latency stats (`sidecard latency --video`);

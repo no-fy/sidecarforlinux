@@ -20,7 +20,10 @@ protocol PencilCaptureDelegate: AnyObject {
 final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
     weak var delegate: PencilCaptureDelegate?
     var sendPredicted = false
-    var showInk = true
+    var showInk = true {
+        // Drop the last stroke, or `end()` would flash it again later.
+        didSet { if !showInk { ink.clear() } }
+    }
 
     private var seq: UInt32 = 0
     private var touching = false
@@ -154,7 +157,9 @@ final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
                               extraFlags: SampleFlags.coalesced))
         }
         emit(out)
-        ink.end()
+        // Only fade ink we drew: `end()` animates opacity from 1, which would
+        // flash the last stroke from when local ink was still on.
+        if showInk { ink.end() }
         // If no hover follows (pencil lifted fast, out of hover range), leave
         // proximity shortly after the lift.
         scheduleOut(after: 0.15)
@@ -317,6 +322,12 @@ final class InkLayer: CAShapeLayer {
         fade.isRemovedOnCompletion = false
         fade.fillMode = .forwards
         add(fade, forKey: "fade")
+    }
+
+    func clear() {
+        removeAllAnimations()
+        bezier = UIBezierPath()
+        update()
     }
 
     private func update() {

@@ -354,6 +354,18 @@ impl VideoPlan {
     }
 }
 
+/// Tells the thread that owns the virtual monitor to remove it, when
+/// dropped. A guard rather than a call at the end of `run_video_plan`, because
+/// that future is cancelled when the pen session ends (iPad locked, cable
+/// pulled): the monitor used to stay, and the next session added another.
+struct StopOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Opens the video channel once the pen session is up.
 #[allow(clippy::too_many_arguments)]
 async fn run_video_plan(
@@ -373,8 +385,11 @@ async fn run_video_plan(
     let h = (info.surface.height_pt * info.surface.scale)
         .round()
         .max(16.0) as u32;
-    // Keeps the virtual output alive (and its Wayland socket drained).
-    let mut keeper: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+    // Keeps the virtual output alive (and its Wayland socket drained); see StopOnDrop.
+    let mut _keeper: Option<StopOnDrop> = None;
+    // Fires if KWin closes the virtual monitor's stream (e.g. while its
+    // display settings change), so the caller can start over.
+    let mut closed: Option<tokio::sync::oneshot::Receiver<String>> = None;
     let source = match plan.mode.as_str() {
         "test-pattern" => videochan::test_pattern(w, h, plan.fps),
         m if m.starts_with("file:") => VideoSource::File {
@@ -402,16 +417,28 @@ async fn run_video_plan(
             tracing::info!("virtual monitor {out_name} {w}x{h}, PipeWire node {node}");
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let stop2 = stop.clone();
+            let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
             std::thread::spawn(move || {
-                while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-                    if !matches!(vo.poll(), Ok(true)) {
-                        break;
+                let why = loop {
+                    if stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                        break None;
                     }
-                    std::thread::sleep(Duration::from_millis(500));
-                }
+                    match vo.poll() {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            break Some("KWin closed the virtual monitor's stream".to_string())
+                        }
+                        Err(e) => break Some(format!("virtual monitor: {e:#}")),
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                };
                 drop(vo);
+                if let Some(why) = why {
+                    let _ = closed_tx.send(why);
+                }
             });
-            keeper = Some(stop);
+            _keeper = Some(StopOnDrop(stop));
+            closed = Some(closed_rx);
             #[cfg(target_os = "linux")]
             {
                 let nodes = info.dev_nodes.clone();
@@ -426,7 +453,7 @@ async fn run_video_plan(
         }
         m => bail!("unsupported video mode {m:?}"),
     };
-    let res = async {
+    let video = async {
         let conn = transport::connect(&t, port, &[]).await?;
         videochan::run_video(
             conn,
@@ -438,12 +465,14 @@ async fn run_video_plan(
             Some(clock_rx),
         )
         .await
+    };
+    match closed {
+        Some(closed) => tokio::select! {
+            r = video => r,
+            why = closed => Err(anyhow::anyhow!(why.unwrap_or_else(|_| "virtual monitor thread ended".into()))),
+        },
+        None => video.await,
     }
-    .await;
-    if let Some(stop) = keeper {
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    res
 }
 
 async fn one_session(
@@ -471,42 +500,71 @@ async fn one_session(
     if video.mode == "off" {
         return session::run_session(tls, fp, session_id, ctx).await;
     }
-    let (tx, mut rx) = tokio::sync::watch::channel(None);
+    let (tx, rx) = tokio::sync::watch::channel(None);
     ctx.on_active = Some(tx);
     let (clock_tx, clock_rx) = tokio::sync::watch::channel(None);
     ctx.clock_offset_tx = Some(clock_tx);
-    let (t2, port, identity, name, plan) = (
-        t.clone(),
+    let (port, identity, name) = (
         env.cfg.connection.port,
         ctx.identity.clone(),
         ctx.name.clone(),
-        video.clone(),
     );
-    let video_fut = async move {
-        rx.wait_for(|v| v.is_some())
-            .await
-            .map_err(|_| anyhow::anyhow!("pen session ended"))?;
-        let info = rx.borrow().clone().expect("checked");
-        run_video_plan(t2, port, identity, info, session_id, name, plan, clock_rx).await
+    // One video attempt: wait for the pen session, then stream. Restarted
+    // below whenever it ends while the pen session is still up (encoder
+    // exit, KWin closing the stream when display settings change, ...).
+    let start_video = |delay: Duration| {
+        let (mut rx, clock_rx, t2, identity, name, plan) = (
+            rx.clone(),
+            clock_rx.clone(),
+            t.clone(),
+            identity.clone(),
+            name.clone(),
+            video.clone(),
+        );
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            rx.wait_for(|v| v.is_some())
+                .await
+                .map_err(|_| anyhow::anyhow!("pen session ended"))?;
+            let info = rx.borrow().clone().expect("checked");
+            run_video_plan(t2, port, identity, info, session_id, name, plan, clock_rx).await
+        })
     };
     let end = {
         let input = session::run_session(tls, fp, session_id, ctx);
         tokio::pin!(input);
-        tokio::pin!(video_fut);
-        let mut video_done = false;
+        let mut video_fut = start_video(Duration::ZERO);
+        let mut started = tokio::time::Instant::now();
+        let mut backoff = Duration::from_secs(1);
+        let mut last_err: Option<String> = None;
         loop {
             tokio::select! {
                 r = &mut input => break r,
-                v = &mut video_fut, if !video_done => {
-                    video_done = true;
+                v = &mut video_fut => {
                     match v {
                         Ok(st) => tracing::info!(
                             "video channel ended after {} frames; encoder -> iPad p50 {:.1} ms p95 {:.1} ms ({} samples)",
                             st.frames_sent, st.transport_p50_us as f64 / 1000.0, st.transport_p95_us as f64 / 1000.0,
                             st.latency_samples
                         ),
-                        Err(e) => tracing::warn!("video channel: {e:#}"),
+                        Err(e) => {
+                            let msg = format!("{e:#}");
+                            if last_err.as_deref() == Some(msg.as_str()) {
+                                tracing::debug!("video channel: {msg}");
+                            } else {
+                                tracing::warn!("video channel: {msg}");
+                                last_err = Some(msg);
+                            }
+                        }
                     }
+                    if started.elapsed() > Duration::from_secs(30) {
+                        backoff = Duration::from_secs(1);
+                        last_err = None;
+                    }
+                    tracing::info!("restarting the video channel in {} s", backoff.as_secs());
+                    video_fut = start_video(backoff);
+                    started = tokio::time::Instant::now() + backoff;
+                    backoff = (backoff * 2).min(Duration::from_secs(10));
                 }
             }
         }
@@ -536,10 +594,14 @@ async fn run_loop(
     );
     let mut backoff = Duration::from_millis(500);
     let mut last_err: Option<String> = None;
+    // One listener for the whole loop: a fresh `ctrl_c()` per select missed
+    // a Ctrl-C pressed during the reconnect wait below (iPad unplugged).
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
     loop {
         let res = tokio::select! {
             r = one_session(&env, &t, &mut ctx, &video) => r,
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut ctrl_c => {
                 tracing::info!("interrupted");
                 return Ok(());
             }
@@ -573,7 +635,13 @@ async fn run_loop(
             return Ok(());
         }
         // After a successful pairing, later sessions don't ask again.
-        tokio::time::sleep(backoff).await;
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => {}
+            _ = &mut ctrl_c => {
+                tracing::info!("interrupted");
+                return Ok(());
+            }
+        }
     }
 }
 
