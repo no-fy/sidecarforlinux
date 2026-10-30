@@ -290,6 +290,78 @@ pub fn annexb_to_messages(
         .collect()
 }
 
+/// Reads GStreamer's GDP framing (`gdppay`): a 62-byte header (type u16 BE
+/// at offset 4, payload length u32 BE at offset 6) before every buffer, caps
+/// and event. The encoder pipelines end in `h264parse ... alignment=au !
+/// gdppay`, so each buffer payload is exactly one access unit.
+///
+/// Without it the Annex-B splitter only knows a NAL ended when the next start
+/// code arrives, so every frame waited for the next one: one frame interval
+/// while drawing, and up to the 1 s keepalive once the screen stopped
+/// changing. Found on the real machine as "latency issues".
+#[derive(Debug, Default)]
+pub struct GdpReader {
+    buf: Vec<u8>,
+}
+
+pub const GDP_HEADER_LEN: usize = 62;
+const GDP_PAYLOAD_BUFFER: u16 = 1;
+/// A sanity bound: a 4K keyframe at high bitrate is well under this.
+const GDP_MAX_PAYLOAD: usize = 64 << 20;
+
+impl GdpReader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed bytes; returns the payload of every complete *buffer* packet
+    /// (caps and events are skipped).
+    pub fn push(&mut self, data: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
+        self.buf.extend_from_slice(data);
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while self.buf.len() - pos >= GDP_HEADER_LEN {
+            let h = &self.buf[pos..pos + GDP_HEADER_LEN];
+            if h[0] != 1 {
+                anyhow::bail!(
+                    "unexpected GDP version {}.{} (is gdppay in the pipeline?)",
+                    h[0],
+                    h[1]
+                );
+            }
+            let ty = u16::from_be_bytes([h[4], h[5]]);
+            let len = u32::from_be_bytes([h[6], h[7], h[8], h[9]]) as usize;
+            if len > GDP_MAX_PAYLOAD {
+                anyhow::bail!("GDP packet of {len} bytes, refusing");
+            }
+            if self.buf.len() - pos < GDP_HEADER_LEN + len {
+                break;
+            }
+            let body = pos + GDP_HEADER_LEN;
+            if ty == GDP_PAYLOAD_BUFFER {
+                out.push(self.buf[body..body + len].to_vec());
+            }
+            pos = body + len;
+        }
+        self.buf.drain(..pos);
+        Ok(out)
+    }
+}
+
+/// One complete access unit in Annex-B (from a GDP buffer) → outputs, without
+/// waiting for the next frame.
+pub fn complete_au(split: &mut AnnexBSplitter, asm: &mut AuAssembler, au: &[u8]) -> Vec<Output> {
+    let mut out = Vec::new();
+    for nal in split.push(au) {
+        out.extend(asm.push(nal));
+    }
+    if let Some(nal) = split.finish() {
+        out.extend(asm.push(nal));
+    }
+    out.extend(asm.finish());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +463,71 @@ mod tests {
         assert!(matches!(&msgs[0], Message::VideoConfig(c) if c.parameter_sets.len() == 3));
         assert!(matches!(&msgs[1], Message::VideoFrame(f) if f.keyframe));
         assert!(matches!(&msgs[2], Message::VideoFrame(f) if !f.keyframe));
+    }
+
+    fn gdp_packet(ty: u16, payload: &[u8]) -> Vec<u8> {
+        let mut h = vec![0u8; GDP_HEADER_LEN];
+        h[0] = 1;
+        h[4..6].copy_from_slice(&ty.to_be_bytes());
+        h[6..10].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+        h.extend_from_slice(payload);
+        h
+    }
+
+    #[test]
+    fn gdp_reader_returns_buffers_skips_caps_and_events_any_chunking() {
+        let mut stream = gdp_packet(2, b"video/x-h264\0");
+        stream.extend(gdp_packet(64 + 10, b"event"));
+        stream.extend(gdp_packet(1, b"AU-one"));
+        stream.extend(gdp_packet(1, b""));
+        stream.extend(gdp_packet(1, b"AU-three"));
+        for chunk in [1, 7, 61, 62, 63, 1000] {
+            let mut r = GdpReader::new();
+            let mut got = Vec::new();
+            for c in stream.chunks(chunk) {
+                got.extend(r.push(c).unwrap());
+            }
+            assert_eq!(
+                got,
+                vec![b"AU-one".to_vec(), Vec::new(), b"AU-three".to_vec()],
+                "chunk {chunk}"
+            );
+        }
+    }
+
+    #[test]
+    fn gdp_reader_rejects_non_gdp_input() {
+        let mut r = GdpReader::new();
+        let annexb = [0u8, 0, 0, 1, 0x67, 0x42].repeat(20);
+        assert!(r.push(&annexb).is_err());
+    }
+
+    #[test]
+    fn complete_au_emits_the_frame_without_waiting_for_the_next() {
+        // SPS, PPS, IDR slice (first_mb_in_slice = 0 -> ue(v) bit "1").
+        let sps = [0x67u8, 0x42, 0x00, 0x1f, 0xe9];
+        let pps = [0x68u8, 0xce, 0x38, 0x80];
+        let idr = [0x65u8, 0x88, 0x84, 0x00, 0x33];
+        let mut au = Vec::new();
+        for n in [&sps[..], &pps[..], &idr[..]] {
+            au.extend_from_slice(&[0, 0, 0, 1]);
+            au.extend_from_slice(n);
+        }
+        let mut split = AnnexBSplitter::new();
+        let mut asm = AuAssembler::new(VideoCodec::H264);
+        let out = complete_au(&mut split, &mut asm, &au);
+        let frames: Vec<_> = out
+            .iter()
+            .filter_map(|o| match o {
+                Output::Frame(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames.len(), 1, "{out:?}");
+        assert!(frames[0].keyframe);
+        let mut want = (idr.len() as u32).to_be_bytes().to_vec();
+        want.extend_from_slice(&idr);
+        assert_eq!(frames[0].sample, want);
+        assert!(matches!(out[0], Output::Config(_)));
     }
 }

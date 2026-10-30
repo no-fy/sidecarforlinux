@@ -118,6 +118,7 @@ Status labels as in REPORT.md.
 2. **Encoder: GStreamer subprocess writing Annex-B to stdout (`daemon/src/videochan.rs`).**
    - **Tested in CI and the VM with the x264 test pattern:** 2360×1640 at 60 fps from GStreamer → our splitter → video channel → fake iPad. CI asserts frames arrive.
    - **Tested on real hardware:** the VA-API pipeline (`pipewiresrc path=<node> ! vapostproc ! vah264enc b-frames=0 rate-control=cbr target-usage=3 …`) on the default VA device of your Intel UHD 630 + Radeon Pro 5300M/5500M laptop. **Untested:** the PipeWire → x264 fallback.
+   - **Framing:** the pipeline ends in `h264parse … alignment=au ! gdppay ! fdsink`. Each GDP packet is exactly one frame, so the daemon sends it immediately. With raw Annex-B it had to wait for the next frame's start code; that hid up to 1 s of lag at the end of strokes, found on the real machine.
    - **Why a subprocess** (DECISIONS D18): no GStreamer bindings in the daemon, and the encoder is easy to swap and debug with `gst-launch-1.0` alone.
 3. **Annex-B → AVCC access units + parameter sets (`daemon/src/video.rs`). Tested.**
    - Unit tests cover any chunking, H.264 and HEVC.

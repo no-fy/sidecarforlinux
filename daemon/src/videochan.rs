@@ -12,7 +12,7 @@ use crate::clock::now_ns;
 use crate::conn::{MsgReader, MsgWriter};
 use crate::identity::Identity;
 use crate::transport::{self, Connected};
-use crate::video::{AnnexBSplitter, AuAssembler, Output};
+use crate::video::{complete_au, AnnexBSplitter, AuAssembler, GdpReader, Output};
 use anyhow::{anyhow, bail, Context, Result};
 use sidecar_protocol::pairing::Fingerprint;
 use sidecar_protocol::*;
@@ -40,12 +40,14 @@ pub enum VideoSource {
         height: u32,
         repeat: bool,
     },
-    /// Any command that writes H.264 Annex-B to stdout.
+    /// Any command that writes H.264 Annex-B to stdout: raw, or one access
+    /// unit per GDP buffer (`gdp`, what our gst-launch pipelines produce).
     Command {
         argv: Vec<String>,
         width: u32,
         height: u32,
         fps: u32,
+        gdp: bool,
     },
 }
 
@@ -61,6 +63,10 @@ fn tail(fps: u32) -> Vec<String> {
         "config-interval=-1".into(),
         "!".into(),
         "video/x-h264,stream-format=byte-stream,alignment=au".into(),
+        "!".into(),
+        // One access unit per GDP packet, so frames go out without waiting
+        // for the next one (see video::GdpReader).
+        "gdppay".into(),
         "!".into(),
         "fdsink".into(),
         "fd=1".into(),
@@ -86,6 +92,7 @@ pub fn test_pattern(width: u32, height: u32, fps: u32) -> VideoSource {
         width,
         height,
         fps,
+        gdp: true,
     }
 }
 
@@ -129,6 +136,7 @@ pub fn pipewire(
         width,
         height,
         fps,
+        gdp: true,
     }
 }
 
@@ -206,6 +214,7 @@ async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
             width,
             height,
             fps,
+            gdp,
         } => {
             let (prog, args) = argv
                 .split_first()
@@ -224,6 +233,7 @@ async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
             let mut out = child.stdout.take().unwrap();
             let mut split = AnnexBSplitter::new();
             let mut asm = AuAssembler::new(VideoCodec::H264);
+            let mut gdp_reader = gdp.then(GdpReader::new);
             let mut buf = vec![0u8; 256 * 1024];
             let mut id = 0u32;
             loop {
@@ -232,31 +242,41 @@ async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
                     let status = child.wait().await?;
                     bail!("video encoder exited ({status})");
                 }
-                for nal in split.push(&buf[..n]) {
-                    for o in asm.push(nal) {
-                        let m = match o {
-                            Output::Config(sets) => Message::VideoConfig(VideoConfig {
-                                codec: VideoCodec::H264,
-                                width,
-                                height,
-                                fps_milli: fps * 1000,
-                                parameter_sets: sets,
-                            }),
-                            Output::Frame(au) => {
-                                id = id.wrapping_add(1);
-                                let t = now_ns();
-                                Message::VideoFrame(VideoFrame {
-                                    frame_id: id,
-                                    keyframe: au.keyframe,
-                                    capture_ns: t,
-                                    encoded_ns: t,
-                                    data: au.sample,
-                                })
-                            }
-                        };
-                        if tx.send(m).await.is_err() {
-                            return Ok(());
+                let outputs: Vec<Output> = match gdp_reader.as_mut() {
+                    Some(r) => r
+                        .push(&buf[..n])?
+                        .iter()
+                        .flat_map(|au| complete_au(&mut split, &mut asm, au))
+                        .collect(),
+                    None => split
+                        .push(&buf[..n])
+                        .into_iter()
+                        .flat_map(|nal| asm.push(nal))
+                        .collect(),
+                };
+                for o in outputs {
+                    let m = match o {
+                        Output::Config(sets) => Message::VideoConfig(VideoConfig {
+                            codec: VideoCodec::H264,
+                            width,
+                            height,
+                            fps_milli: fps * 1000,
+                            parameter_sets: sets,
+                        }),
+                        Output::Frame(au) => {
+                            id = id.wrapping_add(1);
+                            let t = now_ns();
+                            Message::VideoFrame(VideoFrame {
+                                frame_id: id,
+                                keyframe: au.keyframe,
+                                capture_ns: t,
+                                encoded_ns: t,
+                                data: au.sample,
+                            })
                         }
+                    };
+                    if tx.send(m).await.is_err() {
+                        return Ok(());
                     }
                 }
             }
