@@ -39,7 +39,10 @@ final class VectorTests: XCTestCase {
     static func sample(_ seq: UInt32, _ phase: PenPhase) -> PenSample {
         PenSample(timestampNs: 1_234_567_890_123 + UInt64(seq) * 4_166_667, seq: seq, phase: phase,
                   flags: SampleFlags.coalesced | SampleFlags.rollValid, x: 0.25, y: 0.75, pressure: 0.5,
-                  altitude: Float.pi / 4, azimuth: Float.pi / 2, roll: -0.5, zOffset: 0, estimationIndex: 7)
+                  // Exact bit patterns of Rust's f32 FRAC_PI_4 / FRAC_PI_2 (round to nearest).
+                  // Swift's Float.pi rounds toward zero, so Float.pi / 4 is one ULP smaller.
+                  altitude: Float(bitPattern: 0x3F49_0FDB), azimuth: Float(bitPattern: 0x3FC9_0FDB), roll: -0.5,
+                  zOffset: 0, estimationIndex: 7)
     }
 
     /// Must build exactly the messages of protocol/rust/tests/vectors.rs.

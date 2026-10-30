@@ -96,6 +96,21 @@ fn uinput_tablet_capabilities_and_events_roundtrip() {
     assert_eq!(info(ABS_DISTANCE).maximum(), DISTANCE_MAX);
 
     // Replay the demo as fast as possible and compute the expected stream.
+    // Read while writing: the evdev client buffer is only a few hundred
+    // events deep and overflows (SYN_DROPPED) if we write everything first.
+    {
+        use std::os::fd::AsRawFd;
+        let fd = dev.as_raw_fd();
+        // SAFETY: fcntl on a valid, owned fd.
+        unsafe {
+            libc::fcntl(
+                fd,
+                libc::F_SETFL,
+                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+            )
+        };
+    }
+    let mut got: Vec<RawEvent> = Vec::new();
     let mut mapper = PenMapper::new(geo, MapperConfig::default());
     let gcfg = GestureConfig::default();
     let mut expected: Vec<RawEvent> = Vec::new();
@@ -115,23 +130,15 @@ fn uinput_tablet_capabilities_and_events_roundtrip() {
                 code: SYN_REPORT,
                 value: 0,
             });
+            while matches!(read_some(&mut dev, &mut got), Ok(n) if n > 0) {}
         }
     }
+    assert!(
+        !got.iter().any(|e| e.ty == EV_SYN && e.code == 3),
+        "SYN_DROPPED: reader fell behind"
+    );
 
-    // Read back everything the kernel delivered.
-    {
-        use std::os::fd::AsRawFd;
-        let fd = dev.as_raw_fd();
-        // SAFETY: fcntl on a valid, owned fd.
-        unsafe {
-            libc::fcntl(
-                fd,
-                libc::F_SETFL,
-                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
-            )
-        };
-    }
-    let mut got: Vec<RawEvent> = Vec::new();
+    // Read back what's left.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut last_data = Instant::now();
     while Instant::now() < deadline {
