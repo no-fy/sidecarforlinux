@@ -206,3 +206,10 @@ Research notes with sources for everything below are in [`docs/research/`](resea
 
 - **No overlap:** no clipboard, file or notification features. Different port (5134 vs 47811/47812) and different Bonjour type (`_tether._tcp` vs `_sidecarlinux._tcp`).
 - **Ideas only:** taken from its MIT code. Integration notes are in [`docs/tether.md`](tether.md).
+
+## D19. The virtual tablet lives exactly as long as the iPad connection
+
+- **Decision (yours, 2026-10-30):** `sidecard` creates the uinput tablet when an iPad session starts and destroys it when the session ends. It is not kept alive between connections.
+- **Consequence, observed on your machine:** apps in X11 mode (XWayland) only pick up tablets that existed when they started. With Krita 6.0.4 in its default X11 mode, a pen created after Krita started arrived as a plain mouse (no pressure, no eraser). Created before Krita started, it arrived as a stylus with pressure and tilt.
+- **What we do instead:** run Krita in native Wayland mode (`scripts/krita-wayland.sh`), where Qt picks up tablets as they appear. In Wayland mode, Krita's tester reported pen and eraser proximity from a pen created after Krita started.
+- **Rejected:** a persistent device created at daemon start from the last iPad's geometry.

@@ -42,7 +42,7 @@ Why a new project: [docs/DECISIONS.md#d1](docs/DECISIONS.md#d1-new-project-inste
 daemon/       Rust daemon `sidecard`: transport, TLS/pairing, uinput tablet, latency tool, fake iPad
 protocol/     wire protocol: Rust crate, Swift package, golden test vectors
 ios-app/      iPad app (Swift, UIKit), built with xtool (SwiftPM + xtool.yml)
-scripts/      doctor.sh, setup-system.sh, install-daemon.sh, resign-ipad.sh, CI checks
+scripts/      doctor.sh, setup-system.sh, install-daemon.sh, resign-ipad.sh, krita-wayland.sh, CI checks
 docs/         architecture.md, protocol.md, DECISIONS.md, MORNING.md, REPORT.md, latency.md, phase2 design, research
 ```
 
@@ -53,9 +53,10 @@ The short version is below; the detailed, ordered checklist is [docs/MORNING.md]
 ```bash
 git clone https://github.com/no-fy/sidecarforlinux.git && cd sidecarforlinux
 scripts/doctor.sh            # read-only report of what's missing
-scripts/setup-system.sh      # shows its plan, asks, then: usbmuxd, uinput group + udev rule, module autoload
-# log out and back in
+scripts/setup-system.sh      # shows its plan, asks, then: packages (+ uinput group/udev rule if /dev/uinput isn't writable yet)
+# log out and back in only if it added the uinput group
 scripts/install-daemon.sh    # cargo build --release, installs ~/.local/bin/sidecard (+ optional user service)
+scripts/krita-wayland.sh     # optional: Krita launcher in Wayland mode, so it sees the pen whenever the iPad connects
 ```
 
 System changes made by `setup-system.sh` (nothing else is touched):
@@ -166,6 +167,7 @@ CI runs:
 | `no iOS device attached over USB` | Unlock the iPad and tap **Trust**. Try another cable or a port on the other side of the laptop. Check with `idevice_id -l`. |
 | `not paired; run sidecard pair` | Pair once (above). |
 | Tablet works but on the wrong screen | System Settings → Drawing Tablet → map to screen, or `[kde] output = "DP-1"` (names from `kscreen-doctor -o`). |
+| Krita draws, but with even width and no eraser (its Tablet Tester says "Mouse …") | Krita is in its default X11 mode and was started before the pen existed. Run `scripts/krita-wayland.sh` once, or restart Krita after the iPad connects. |
 | Light strokes don't draw | Raise `min_contact_pressure` (default 0.06; libinput's tip threshold is 5 %). |
 | App won't launch after a week | The profile expired: re-sign (above). |
 | Anything else | `sidecard -vv run`, `journalctl --user -u sidecard -f`, and `scripts/doctor.sh`. |

@@ -86,7 +86,13 @@ Then:
    ```
 
    Meanwhile open **System Settings → Drawing Tablet**. Is **"Sidecar Apple Pencil"** listed? The yellow note "This device is managed by a user-space driver…" is expected. KWin flags every `/dev/uinput` device as virtual, and the settings page shows that note for them. KWin's input handling ignores the flag. Map it to the screen you want, or put `[kde] output = "eDP-2"` in `~/.config/sidecarforlinux/config.toml` (output names come from `kscreen-doctor -o`). After 60 s it plays the stroke once and exits.
-2. **Krita.** Open Krita, make it full screen with a new canvas and a pressure + tilt brush. Then run:
+2. **Krita.** By default Krita 6 runs in X11 mode (XWayland), where it only sees tablets that existed when it started. The virtual pen only exists while the iPad is connected (or a replay runs). So start Krita in Wayland mode, once:
+
+   ```bash
+   scripts/krita-wayland.sh   # shows what it writes (one launcher file in ~/.local/share/applications), asks first; --undo removes it
+   ```
+
+   Then quit Krita and start it again from the app launcher. Open it full screen with a new canvas and the **b) Basic-5 Size Opacity** brush (size and opacity follow pressure). Then run:
 
    ```bash
    sidecard replay /tmp/demo.jsonl --loop --settle 5
