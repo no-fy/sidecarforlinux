@@ -218,6 +218,37 @@ fn sink_factory(dry_run: bool, kde_output: String) -> SinkFactory {
     )
 }
 
+/// One daemon session per user: the iPad lets the newest connection win, so
+/// two `sidecard` processes would keep kicking each other off.
+fn single_instance_lock() -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let path = dir.join("sidecard.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    // SAFETY: flock on a valid fd we own; released when the file is dropped.
+    let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if r != 0 {
+        let pid = std::fs::read_to_string(&path).unwrap_or_default();
+        bail!(
+            "another sidecard is already talking to the iPad (pid {}). Stop it first, e.g. `systemctl --user stop sidecard`",
+            pid.trim()
+        );
+    }
+    use std::io::Write;
+    let mut w = &f;
+    let _ = f.set_len(0);
+    let _ = write!(w, "{}", std::process::id());
+    Ok(f)
+}
+
 fn session_ctx(env: &Env, pairing: PairingMode, dry_run: bool) -> Result<SessionCtx> {
     Ok(SessionCtx {
         identity: env.identity()?,
@@ -266,6 +297,7 @@ async fn run_loop(
     record: Option<PathBuf>,
     once: bool,
 ) -> Result<()> {
+    let _lock = single_instance_lock()?;
     let t = env.transport(&conn)?;
     let mut ctx = session_ctx(&env, pairing, conn.dry_run)?;
     if let Some(p) = &record {
@@ -357,6 +389,7 @@ fn print_latency(stats: &SessionStats) {
 }
 
 async fn latency(env: Env, conn: ConnArgs, duration: u64, json: Option<PathBuf>) -> Result<()> {
+    let _lock = single_instance_lock()?;
     let t = env.transport(&conn)?;
     let mut ctx = session_ctx(&env, PairingMode::Refuse, conn.dry_run)?;
     ctx.max_duration = Some(Duration::from_secs(duration));
