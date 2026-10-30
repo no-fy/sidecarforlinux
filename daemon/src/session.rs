@@ -404,8 +404,22 @@ where
                     }
                     Message::PencilGesture(g) => {
                         ctx.stats.gestures += 1;
-                        tracing::debug!("gesture {:?} {:?}", g.kind, g.phase);
                         let out = gestures::handle(&ctx.gesture_cfg, &mut live.mapper, &g);
+                        // Logged at info: "did the gesture reach the PC?" is the
+                        // first question when one seems to do nothing.
+                        let action = match g.kind {
+                            GestureKind::DoubleTap => &ctx.gesture_cfg.double_tap,
+                            GestureKind::Squeeze => &ctx.gesture_cfg.squeeze,
+                        };
+                        tracing::info!(
+                            "pencil {:?} {:?} (iPadOS preferred action {}) -> {:?}, {} pen / {} key events",
+                            g.kind,
+                            g.phase,
+                            g.preferred_action,
+                            action,
+                            out.pen_frames.len(),
+                            out.key_frames.len()
+                        );
                         live.sink.emit_all(DeviceKind::Pen, &out.pen_frames)?;
                         live.sink.emit_all(DeviceKind::Keys, &out.key_frames)?;
                         if let Some(tool) = out.tool_changed {

@@ -25,6 +25,8 @@ Run by you, with screenshots and logs sent back. No iPad involved yet (synthetic
 | KWin accepts the virtual pen | **Tested.** The cursor follows it. Listed in System Settings → Drawing Tablet, with KDE's generic "user-space driver" note shown for every uinput device. KDE's tester receives tablet (`zwp_tablet_tool_v2`) events. |
 | Krita, default X11 mode | **Tested.** A pen created after Krita started arrives as a mouse (no pressure). Created before Krita started, it arrives as a stylus: pressure 62 % for the demo's 0.6, tilt 24.1°/25.1° for an expected 24.1°/24.7° (1° steps). |
 | Krita, Wayland mode (`scripts/krita-wayland.sh`) | **Tested.** Picks up the pen whenever it appears. The S-stroke goes thin → thick → thin with pressure, and the eraser stroke leaves no black line. |
+| **Real iPad + Pencil Pro over USB** | **Tested.** `sidecard pair` (codes matched), then `sidecard run`. Working: pressure, tilt (Krita tester TX/TY), hover, double-tap (eraser toggle, haptic), barrel roll (`ABS_Z` in evtest). Listed in Drawing Tablet. Lag "feels good". **Squeeze did nothing** (being investigated). |
+| USB latency | **Tested:** touch → uinput p50 8.6 ms / p95 16.3 ms, network p50 0.68 ms. Mostly the iPad's 60 Hz batching; the freshest sample arrives in about 3.5 ms ([latency.md](latency.md)). |
 | `replay --loop` safety | Fixed after the first run fought the user for the cursor: now 3 s pauses, stops by itself after 30 s, and prints how to stop it. |
 
 ## Done and tested

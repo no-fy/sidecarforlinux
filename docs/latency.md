@@ -41,8 +41,14 @@ With `--video`, the daemon logs **encoder output → iPad received** every 10 s,
 | Date | Setup | touch → uinput p50 / p95 / p99 | network p50 / p95 | RTT | Status |
 |---|---|---|---|---|---|
 | 2026-10-30 | CI ubuntu runner, **fake iPad** over TCP+TLS loopback, 240 Hz samples batched at 120 Hz | 5.34 / 9.91 / 10.22 ms | 0.08 / 0.10 ms | 0.09 ms | **tested** (CI artifact `uinput-evidence/latency-loopback.txt`) |
-| — | MacBook Pro 16" + iPad Air over **USB** | *to be measured: MORNING.md step 8* | | | not measured |
+| 2026-10-30 | MacBook Pro 16" (t2linux 7.2.11, KDE 6.8.2) + iPad Air (60 Hz display) + Pencil Pro over **USB** (usbmuxd), 30 s of drawing, 6786 samples in 1729 batches | 8.62 / 16.33 / 16.66 ms (max 17.19) | 0.68 / 1.00 ms | 0.69 ms | **tested** (your run) |
 | — | MacBook Pro 16" + iPad Air over **Wi-Fi** | *to be measured: MORNING.md step 9* | | | not measured |
+
+How to read the USB row:
+- The histogram has four peaks about 4.2 ms apart: 3–4, 7–8, 11–12 and 15–17 ms. That's 240 Hz pencil sampling with delivery at 60 Hz. The iPad Air's display is 60 Hz, so iPadOS hands the app about 4 coalesced samples per frame: 1729 batches in 30 s ≈ 58 per second, 3.9 samples each.
+- The **freshest** sample of each batch reaches uinput about 3.5 ms after the digitizer measured it. The older samples in the same batch are 4, 8 and 12 ms older. They still help, because they're the in-between points that make strokes smooth.
+- USB plus TLS plus the daemon cost about 0.7 ms (network p50). Nearly all the rest is iPadOS's 60 Hz delivery, which no app can change on a 60 Hz iPad. Your verdict: the lag feels good.
+- Not measured here: KWin, Krita, and the PC display.
 
 How to read the loopback row:
 - The network cost of TLS over TCP plus the daemon is about 0.1 ms.
