@@ -357,9 +357,7 @@ impl PenMapper {
         if let Some(t) = self.pending_tool {
             if t != self.tool && self.in_prox && !self.touching {
                 self.pending_tool = None;
-                let mut f = Frame::new();
-                f.push(RawEvent::key(self.tool.code(), false));
-                frames.push(f);
+                frames.push(vec![RawEvent::key(self.tool.code(), false)]);
                 self.tool = t;
                 frames.push(vec![RawEvent::key(t.code(), true)]);
             }

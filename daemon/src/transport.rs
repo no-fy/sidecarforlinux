@@ -143,16 +143,15 @@ pub async fn connect_wifi(prefer_fp: &[String]) -> Result<Connected> {
     });
     for d in &ordered {
         for a in &d.addrs {
-            if let Ok(s) = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(a)).await
+            if let Ok(Ok(s)) =
+                tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(a)).await
             {
-                if let Ok(s) = s {
-                    s.set_nodelay(true)?;
-                    return Ok(Connected {
-                        stream: Box::new(s),
-                        description: format!("Wi-Fi {} ({a})", d.name),
-                        via_usb: false,
-                    });
-                }
+                s.set_nodelay(true)?;
+                return Ok(Connected {
+                    stream: Box::new(s),
+                    description: format!("Wi-Fi {} ({a})", d.name),
+                    via_usb: false,
+                });
             }
         }
     }

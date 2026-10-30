@@ -1,0 +1,58 @@
+name: linux
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install evtest + libinput tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq evtest libinput-tools
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit + end-to-end tests (fake iPad over TLS, no uinput)
+        run: cargo test --workspace
+      - name: Build release
+        run: cargo build --release -p sidecard
+      - name: Real uinput test (root)
+        run: |
+          sudo modprobe uinput
+          cargo test -p sidecard --test uinput --no-run
+          BIN=$(ls -t target/debug/deps/uinput-* | grep -v '\.d$' | head -1)
+          sudo SIDECAR_UINPUT_TEST=1 "$BIN" --nocapture
+      - name: evtest / libinput / udev check with replayed pencil events
+        run: sudo scripts/ci-uinput-check.sh target/release/sidecard out
+      - name: Fake iPad end-to-end via CLI (pairing + replay + latency)
+        run: |
+          export SIDECAR_CONFIG_DIR=$PWD/out/pc
+          ./target/release/sidecard fake-ipad --listen 127.0.0.1:47811 --state-dir out/fake --speed 2 &
+          sleep 1
+          yes y | ./target/release/sidecard run --pair --once --dry-run --connect 127.0.0.1:47811 > out/pair-run.txt 2>&1
+          ./target/release/sidecard fake-ipad --listen 127.0.0.1:47811 --state-dir out/fake --speed 1 &
+          sleep 1
+          ./target/release/sidecard latency --dry-run --connect 127.0.0.1:47811 --duration 4 --json out/latency-loopback.json | tee out/latency-loopback.txt | grep -v '^Pen:'
+          grep -q "paired with" out/pair-run.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uinput-evidence
+          path: out/
+
+  swift-protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift protocol package tests (Linux)
+        run: swift --version && cd protocol/swift && swift test
