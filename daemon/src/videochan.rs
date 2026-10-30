@@ -139,6 +139,10 @@ pub struct VideoStats {
     pub bytes_sent: u64,
     pub feedback: u64,
     pub keyframe_requests: u64,
+    /// Encoder output → iPad received, microseconds (needs clock sync).
+    pub transport_p50_us: u32,
+    pub transport_p95_us: u32,
+    pub latency_samples: u32,
 }
 
 /// Messages produced by a source, re-stamped with the daemon clock.
@@ -261,6 +265,7 @@ pub async fn run_video(
     session_id: u64,
     name: &str,
     source: VideoSource,
+    clock_offset: Option<tokio::sync::watch::Receiver<Option<i64>>>,
 ) -> Result<VideoStats> {
     let (tls, fp) = transport::tls_connect(conn, identity).await?;
     if fp != expect_fp {
@@ -292,6 +297,10 @@ pub async fn run_video(
     let (tx, mut rx) = mpsc::channel::<Message>(8);
     let mut producer = tokio::spawn(produce(source, tx));
     let mut stats = VideoStats::default();
+    // frame_id -> daemon time the frame left the encoder
+    let mut sent_at: std::collections::VecDeque<(u32, u64)> = std::collections::VecDeque::new();
+    let mut lat = crate::clock::LatencyStats::new(10_000);
+    let mut last_log = tokio::time::Instant::now();
     let result = loop {
         tokio::select! {
             m = rx.recv() => {
@@ -306,6 +315,10 @@ pub async fn run_video(
                     stats.frames_sent += 1;
                     stats.keyframes_sent += f.keyframe as u64;
                     stats.bytes_sent += f.data.len() as u64;
+                    sent_at.push_back((f.frame_id, f.capture_ns));
+                    if sent_at.len() > 600 {
+                        sent_at.pop_front();
+                    }
                 }
                 if let Err(e) = wr.send(&m).await {
                     break Err(e);
@@ -314,6 +327,20 @@ pub async fn run_video(
             m = rd.next() => match m {
                 Ok(Some(Message::VideoFeedback(fb))) => {
                     stats.feedback += 1;
+                    let offset = clock_offset.as_ref().and_then(|r| *r.borrow());
+                    if let (Some(off), Some(&(_, t_out))) =
+                        (offset, sent_at.iter().find(|(id, _)| *id == fb.frame_id))
+                    {
+                        lat.push_ns(fb.received_ns as i64 - off - t_out as i64);
+                        if last_log.elapsed() >= Duration::from_secs(10) {
+                            last_log = tokio::time::Instant::now();
+                            let r = lat.report(None);
+                            tracing::info!(
+                                "video latency (encoder out -> iPad received) p50 {:.1} ms p95 {:.1} ms over {} frames",
+                                r.p50_us as f64 / 1000.0, r.p95_us as f64 / 1000.0, r.samples
+                            );
+                        }
+                    }
                     if fb.request_keyframe {
                         stats.keyframe_requests += 1;
                         tracing::debug!("iPad requested a keyframe (frame {})", fb.frame_id);
@@ -327,6 +354,10 @@ pub async fn run_video(
     };
     producer.abort();
     wr.shutdown().await;
+    let r = lat.report(None);
+    stats.transport_p50_us = r.p50_us;
+    stats.transport_p95_us = r.p95_us;
+    stats.latency_samples = r.samples;
     tracing::info!(
         "video channel closed: {} frames ({} keyframes), {:.1} MB",
         stats.frames_sent,

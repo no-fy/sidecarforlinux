@@ -26,6 +26,12 @@
 - Error bound: ± RTT/2. The report prints the RTT; expect well under 1 ms over USB.
 - Drift: the offset is refreshed every second, so clock drift (tens of ppm) stays under 0.1 ms.
 
+### Video (phase 2)
+
+With `--video`, the daemon logs **encoder output → iPad received** every 10 s, using the iPad's `VideoFeedback` timestamps and the pen channel's clock offset.
+- On CI-like loopback with the x264 test pattern: p50 0.2 ms (network only).
+- Not covered: rendering on the PC, KWin compositing and capture, encode time, and decode/display on the iPad. Those need the methods below.
+
 ### What isn't measured (yet)
 
 **Glass-to-glass** latency, from tip to photons on the PC screen, needs a camera. Once phase 2 works it also needs the video path (PC → iPad). Planned method: a high-speed phone video of the pencil moving across the iPad while the PC screen shows the stroke, then count frames. See [phase2-virtual-display.md](phase2-virtual-display.md#measuring-end-to-end).

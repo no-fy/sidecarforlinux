@@ -301,6 +301,7 @@ fn session_ctx(env: &Env, pairing: PairingMode, dry_run: bool) -> Result<Session
         max_samples: None,
         recorder: None,
         on_active: None,
+        clock_offset_tx: None,
         stats: SessionStats::default(),
     })
 }
@@ -332,6 +333,7 @@ impl VideoPlan {
 }
 
 /// Opens the video channel once the pen session is up.
+#[allow(clippy::too_many_arguments)]
 async fn run_video_plan(
     t: Transport,
     port: u16,
@@ -340,6 +342,7 @@ async fn run_video_plan(
     session_id: u64,
     name: String,
     plan: VideoPlan,
+    clock_rx: tokio::sync::watch::Receiver<Option<i64>>,
 ) -> Result<videochan::VideoStats> {
     use videochan::VideoSource;
     let w = (info.surface.width_pt * info.surface.scale)
@@ -403,7 +406,16 @@ async fn run_video_plan(
     };
     let res = async {
         let conn = transport::connect(&t, port, &[]).await?;
-        videochan::run_video(conn, &identity, info.peer_fp, session_id, &name, source).await
+        videochan::run_video(
+            conn,
+            &identity,
+            info.peer_fp,
+            session_id,
+            &name,
+            source,
+            Some(clock_rx),
+        )
+        .await
     }
     .await;
     if let Some(stop) = keeper {
@@ -439,6 +451,8 @@ async fn one_session(
     }
     let (tx, mut rx) = tokio::sync::watch::channel(None);
     ctx.on_active = Some(tx);
+    let (clock_tx, clock_rx) = tokio::sync::watch::channel(None);
+    ctx.clock_offset_tx = Some(clock_tx);
     let (t2, port, identity, name, plan) = (
         t.clone(),
         env.cfg.connection.port,
@@ -451,7 +465,7 @@ async fn one_session(
             .await
             .map_err(|_| anyhow::anyhow!("pen session ended"))?;
         let info = rx.borrow().clone().expect("checked");
-        run_video_plan(t2, port, identity, info, session_id, name, plan).await
+        run_video_plan(t2, port, identity, info, session_id, name, plan, clock_rx).await
     };
     let end = {
         let input = session::run_session(tls, fp, session_id, ctx);
@@ -464,7 +478,11 @@ async fn one_session(
                 v = &mut video_fut, if !video_done => {
                     video_done = true;
                     match v {
-                        Ok(st) => tracing::info!("video channel ended after {} frames", st.frames_sent),
+                        Ok(st) => tracing::info!(
+                            "video channel ended after {} frames; encoder -> iPad p50 {:.1} ms p95 {:.1} ms ({} samples)",
+                            st.frames_sent, st.transport_p50_us as f64 / 1000.0, st.transport_p95_us as f64 / 1000.0,
+                            st.latency_samples
+                        ),
                         Err(e) => tracing::warn!("video channel: {e:#}"),
                     }
                 }
@@ -472,6 +490,7 @@ async fn one_session(
         }
     };
     ctx.on_active = None;
+    ctx.clock_offset_tx = None;
     end
 }
 

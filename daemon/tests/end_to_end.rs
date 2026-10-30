@@ -43,6 +43,7 @@ fn ctx(id: Identity, trust: TrustStore, pairing: PairingMode, sink: Shared) -> S
         max_samples: None,
         recorder: None,
         on_active: None,
+        clock_offset_tx: None,
         stats: SessionStats::default(),
     }
 }
@@ -297,6 +298,8 @@ async fn video_channel_streams_frames_next_to_the_pen_session() {
     );
     let (tx, mut rx) = tokio::sync::watch::channel(None);
     c.on_active = Some(tx);
+    let (clock_tx, clock_rx) = tokio::sync::watch::channel(None);
+    c.clock_offset_tx = Some(clock_tx);
     let conn = transport::connect_tcp(&addr).await.unwrap();
     let (tls, fp) = transport::tls_connect(conn, &c.identity).await.unwrap();
     let clip = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -312,7 +315,16 @@ async fn video_channel_streams_frames_next_to_the_pen_session() {
             height: 144,
             repeat: true,
         };
-        videochan::run_video(conn, &daemon_id, info.peer_fp, 42, "test-pc", src).await
+        videochan::run_video(
+            conn,
+            &daemon_id,
+            info.peer_fp,
+            42,
+            "test-pc",
+            src,
+            Some(clock_rx),
+        )
+        .await
     };
     let end = {
         let input = session::run_session(tls, fp, 42, &mut c);

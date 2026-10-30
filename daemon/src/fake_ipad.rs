@@ -78,6 +78,7 @@ async fn serve_video(
     daemon_fp: [u8; 32],
     session_id: u64,
     rx: std::sync::Arc<std::sync::Mutex<VideoRx>>,
+    clock_offset_ns: i64,
 ) -> Result<()> {
     tcp.set_nodelay(true)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(tls::server_config(&id)?);
@@ -127,7 +128,7 @@ async fn serve_video(
                     v.keyframes += f.keyframe as u32;
                     v.bytes += f.data.len() as u64;
                 }
-                let t = now_ns();
+                let t = (now_ns() as i64 + clock_offset_ns) as u64; // fake iPad clock
                 wr.send(&Message::VideoFeedback(VideoFeedback {
                     frame_id: f.frame_id,
                     request_keyframe: false,
@@ -266,7 +267,9 @@ pub async fn serve_one(
         if o.frame_hz <= 0.0 || o.speed <= 0.0 {
             return None;
         }
-        let period_ms = 1000.0 / o.frame_hz;
+        // Display frames are real time: in recording time a frame lasts
+        // period * speed.
+        let period_ms = 1000.0 / o.frame_hz * o.speed;
         let end_ms = ((t_ms / period_ms).floor() + 1.0) * period_ms;
         Some(at(end_ms))
     };
@@ -289,9 +292,9 @@ pub async fn serve_one(
             // A second connection during the session = the video channel.
             acc = listener.accept() => {
                 if let Ok((tcp, _)) = acc {
-                    let (idc, rx) = (id.clone(), video_rx.clone());
+                    let (idc, rx, off) = (id.clone(), video_rx.clone(), o.clock_offset_ns);
                     tokio::spawn(async move {
-                        if let Err(e) = serve_video(tcp, idc, daemon_fp, session_id, rx).await {
+                        if let Err(e) = serve_video(tcp, idc, daemon_fp, session_id, rx, off).await {
                             tracing::debug!("fake iPad video channel: {e:#}");
                         }
                     });

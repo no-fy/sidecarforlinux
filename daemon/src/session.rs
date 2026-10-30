@@ -48,6 +48,8 @@ pub struct SessionCtx {
     /// Told once the session is authenticated (pairing done, tablet created):
     /// the video channel waits for this.
     pub on_active: Option<tokio::sync::watch::Sender<Option<ActiveInfo>>>,
+    /// Latest iPad−daemon clock offset (ns), for the video channel's latency stats.
+    pub clock_offset_tx: Option<tokio::sync::watch::Sender<Option<i64>>>,
     /// Filled during the session.
     pub stats: SessionStats,
 }
@@ -428,6 +430,9 @@ where
                         live.clock.on_pong(&p, now_ns());
                         ctx.stats.rtt_ns = live.clock.rtt_ns();
                         ctx.stats.clock_offset_ns = live.clock.offset_ns();
+                        if let Some(tx) = &ctx.clock_offset_tx {
+                            let _ = tx.send(live.clock.offset_ns());
+                        }
                     }
                     Message::Goodbye { code, reason } => return Ok(SessionEnd::Goodbye(code, reason)),
                     Message::Unknown { ty, .. } => tracing::debug!("ignoring unknown message 0x{ty:02x}"),
