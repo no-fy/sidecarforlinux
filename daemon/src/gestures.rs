@@ -30,7 +30,9 @@ impl Action {
             "stylus2" | "button2" => Action::Button(BTN_STYLUS2),
             "stylus3" | "button3" => Action::Button(BTN_STYLUS3),
             l if l.starts_with("keys:") => Action::Keys(parse_key_combo(&t[5..])?),
-            _ => bail!("unknown pencil action {s:?} (none|eraser|stylus|stylus2|stylus3|keys:CTRL+Z)"),
+            _ => bail!(
+                "unknown pencil action {s:?} (none|eraser|stylus|stylus2|stylus3|keys:CTRL+Z)"
+            ),
         })
     }
 }
@@ -73,7 +75,10 @@ fn key_frames(keys: &[u16], down: bool) -> Vec<Frame> {
     if down {
         keys.iter().map(|k| vec![RawEvent::key(*k, true)]).collect()
     } else {
-        keys.iter().rev().map(|k| vec![RawEvent::key(*k, false)]).collect()
+        keys.iter()
+            .rev()
+            .map(|k| vec![RawEvent::key(*k, false)])
+            .collect()
     }
 }
 
@@ -85,10 +90,14 @@ pub fn handle(cfg: &GestureConfig, pen: &mut PenMapper, g: &PencilGesture) -> Ge
     let (action, fire_down, fire_up) = match g.kind {
         GestureKind::DoubleTap => (&cfg.double_tap, true, true),
         GestureKind::Squeeze => match (cfg.squeeze_mode, g.phase) {
-            (SqueezeMode::Click, GesturePhase::Ended | GesturePhase::Discrete) => (&cfg.squeeze, true, true),
+            (SqueezeMode::Click, GesturePhase::Ended | GesturePhase::Discrete) => {
+                (&cfg.squeeze, true, true)
+            }
             (SqueezeMode::Click, _) => return out,
             (SqueezeMode::Hold, GesturePhase::Began) => (&cfg.squeeze, true, false),
-            (SqueezeMode::Hold, GesturePhase::Ended | GesturePhase::Cancelled) => (&cfg.squeeze, false, true),
+            (SqueezeMode::Hold, GesturePhase::Ended | GesturePhase::Cancelled) => {
+                (&cfg.squeeze, false, true)
+            }
             (SqueezeMode::Hold, _) => return out,
         },
     };
@@ -129,9 +138,15 @@ mod tests {
     #[test]
     fn parse_actions() {
         assert_eq!(Action::parse("eraser").unwrap(), Action::ToggleEraser);
-        assert_eq!(Action::parse("stylus2").unwrap(), Action::Button(BTN_STYLUS2));
+        assert_eq!(
+            Action::parse("stylus2").unwrap(),
+            Action::Button(BTN_STYLUS2)
+        );
         assert_eq!(Action::parse("none").unwrap(), Action::None);
-        assert_eq!(Action::parse("keys:ctrl+z").unwrap(), Action::Keys(vec![29, 44]));
+        assert_eq!(
+            Action::parse("keys:ctrl+z").unwrap(),
+            Action::Keys(vec![29, 44])
+        );
         assert!(Action::parse("explode").is_err());
     }
 }

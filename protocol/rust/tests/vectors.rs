@@ -19,8 +19,8 @@ fn sample(seq: u32, phase: PenPhase) -> PenSample {
         x: 0.25,
         y: 0.75,
         pressure: 0.5,
-        altitude: 0.785_398_2,
-        azimuth: 1.570_796_4,
+        altitude: std::f32::consts::FRAC_PI_4,
+        azimuth: std::f32::consts::FRAC_PI_2,
         roll: -0.5,
         z_offset: 0.0,
         estimation_index: 7,
@@ -29,7 +29,12 @@ fn sample(seq: u32, phase: PenPhase) -> PenSample {
 
 /// The canonical message set. The Swift tests build exactly the same values.
 fn messages() -> Vec<(&'static str, Message)> {
-    let surface = SurfaceInfo { width_pt: 1180.0, height_pt: 820.0, scale: 2.0, points_per_inch: 132.0 };
+    let surface = SurfaceInfo {
+        width_pt: 1180.0,
+        height_pt: 820.0,
+        scale: 2.0,
+        points_per_inch: 132.0,
+    };
     vec![
         (
             "hello",
@@ -59,7 +64,13 @@ fn messages() -> Vec<(&'static str, Message)> {
         ("pair_nonce", Message::PairNonce([0xBB; 32])),
         ("pair_reveal", Message::PairReveal([0xCC; 32])),
         ("pair_decision", Message::PairDecision(true)),
-        ("goodbye", Message::Goodbye { code: GoodbyeCode::NotPaired, reason: "pair first".into() }),
+        (
+            "goodbye",
+            Message::Goodbye {
+                code: GoodbyeCode::NotPaired,
+                reason: "pair first".into(),
+            },
+        ),
         (
             "pen_batch",
             Message::PenBatch(PenBatch {
@@ -74,7 +85,14 @@ fn messages() -> Vec<(&'static str, Message)> {
                 kind: GestureKind::Squeeze,
                 phase: GesturePhase::Ended,
                 preferred_action: 5,
-                hover_pose: Some(HoverPose { x: 0.5, y: 0.5, z_offset: 0.25, altitude: 1.0, azimuth: 2.0, roll: 3.0 }),
+                hover_pose: Some(HoverPose {
+                    x: 0.5,
+                    y: 0.5,
+                    z_offset: 0.25,
+                    altitude: 1.0,
+                    azimuth: 2.0,
+                    roll: 3.0,
+                }),
             }),
         ),
         (
@@ -88,13 +106,31 @@ fn messages() -> Vec<(&'static str, Message)> {
             }),
         ),
         ("surface_info", Message::SurfaceInfo(surface)),
-        ("haptic", Message::Haptic(Haptic { kind: HapticKind::Alignment, x: 0.5, y: 0.25 })),
+        (
+            "haptic",
+            Message::Haptic(Haptic {
+                kind: HapticKind::Alignment,
+                x: 0.5,
+                y: 0.25,
+            }),
+        ),
         (
             "mapping_info",
-            Message::MappingInfo(MappingInfo { output_name: "DP-1".into(), area: [0.0, 0.0, 1.0, 1.0] }),
+            Message::MappingInfo(MappingInfo {
+                output_name: "DP-1".into(),
+                area: [0.0, 0.0, 1.0, 1.0],
+            }),
         ),
         ("ping", Message::Ping(Ping { id: 3, t1_ns: 555 })),
-        ("pong", Message::Pong(Pong { id: 3, t1_ns: 555, t2_ns: 1000, t3_ns: 1010 })),
+        (
+            "pong",
+            Message::Pong(Pong {
+                id: 3,
+                t1_ns: 555,
+                t2_ns: 1000,
+                t3_ns: 1010,
+            }),
+        ),
         (
             "latency_report",
             Message::LatencyReport(LatencyReport {
@@ -178,8 +214,12 @@ fn golden_vectors_match() {
     if std::env::var_os("UPDATE_VECTORS").is_some() {
         std::fs::write(&path, &text).unwrap();
     }
-    let on_disk = std::fs::read_to_string(&path).expect("vectors.json missing; run with UPDATE_VECTORS=1");
-    assert_eq!(on_disk, text, "wire format changed; regenerate vectors deliberately");
+    let on_disk =
+        std::fs::read_to_string(&path).expect("vectors.json missing; run with UPDATE_VECTORS=1");
+    assert_eq!(
+        on_disk, text,
+        "wire format changed; regenerate vectors deliberately"
+    );
 }
 
 #[test]
@@ -216,7 +256,11 @@ fn larger_samples_from_newer_minor_are_skipped_correctly() {
     // A v1.1 sender may grow PenSample to 56 bytes.
     let s = sample(1, PenPhase::Move);
     let mut one = Vec::new();
-    Message::PenBatch(PenBatch { send_time_ns: 5, samples: vec![s] }).encode_payload(&mut one);
+    Message::PenBatch(PenBatch {
+        send_time_ns: 5,
+        samples: vec![s],
+    })
+    .encode_payload(&mut one);
     let sample_bytes = &one[12..12 + PenSample::WIRE_LEN];
     let mut payload = Vec::new();
     payload.extend_from_slice(&5u64.to_le_bytes());
@@ -256,5 +300,11 @@ fn truncated_payloads_are_errors_not_panics() {
 #[test]
 fn unknown_types_are_preserved() {
     let m = Message::decode(0x7E, b"abc").unwrap();
-    assert_eq!(m, Message::Unknown { ty: 0x7E, payload: b"abc".to_vec() });
+    assert_eq!(
+        m,
+        Message::Unknown {
+            ty: 0x7E,
+            payload: b"abc".to_vec()
+        }
+    );
 }

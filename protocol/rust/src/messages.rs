@@ -46,7 +46,10 @@ impl Channel {
         match v {
             0 => Ok(Channel::Input),
             1 => Ok(Channel::Video),
-            _ => Err(ProtocolError::BadValue { field: "channel", value: v as u32 }),
+            _ => Err(ProtocolError::BadValue {
+                field: "channel",
+                value: v as u32,
+            }),
         }
     }
 }
@@ -144,7 +147,12 @@ impl PenPhase {
             3 => PenPhase::Up,
             4 => PenPhase::Cancel,
             5 => PenPhase::Out,
-            _ => return Err(ProtocolError::BadValue { field: "phase", value: v as u32 }),
+            _ => {
+                return Err(ProtocolError::BadValue {
+                    field: "phase",
+                    value: v as u32,
+                })
+            }
         })
     }
     pub fn is_contact(self) -> bool {
@@ -421,7 +429,10 @@ pub enum Message {
     PairReveal([u8; 32]),
     /// Both: user accepted (true) or rejected the pairing code.
     PairDecision(bool),
-    Goodbye { code: GoodbyeCode, reason: String },
+    Goodbye {
+        code: GoodbyeCode,
+        reason: String,
+    },
     PenBatch(PenBatch),
     PencilGesture(PencilGesture),
     SurfaceInfo(SurfaceInfo),
@@ -434,7 +445,10 @@ pub enum Message {
     VideoFrame(VideoFrame),
     VideoFeedback(VideoFeedback),
     /// A type this implementation doesn't know; skipped by receivers.
-    Unknown { ty: u8, payload: Vec<u8> },
+    Unknown {
+        ty: u8,
+        payload: Vec<u8>,
+    },
 }
 
 fn write_surface(w: &mut Writer, s: &SurfaceInfo) {
@@ -679,14 +693,22 @@ impl Message {
                     let mut sr = Reader::new(ty, &raw[..PenSample::WIRE_LEN]);
                     samples.push(PenSample::read(&mut sr)?);
                 }
-                Message::PenBatch(PenBatch { send_time_ns, samples })
+                Message::PenBatch(PenBatch {
+                    send_time_ns,
+                    samples,
+                })
             }
             ty::PENCIL_GESTURE => {
                 let timestamp_ns = r.u64()?;
                 let kind = match r.u8()? {
                     1 => GestureKind::DoubleTap,
                     2 => GestureKind::Squeeze,
-                    v => return Err(ProtocolError::BadValue { field: "gesture kind", value: v as u32 }),
+                    v => {
+                        return Err(ProtocolError::BadValue {
+                            field: "gesture kind",
+                            value: v as u32,
+                        })
+                    }
                 };
                 let phase = match r.u8()? {
                     0 => GesturePhase::Discrete,
@@ -694,7 +716,12 @@ impl Message {
                     2 => GesturePhase::Changed,
                     3 => GesturePhase::Ended,
                     4 => GesturePhase::Cancelled,
-                    v => return Err(ProtocolError::BadValue { field: "gesture phase", value: v as u32 }),
+                    v => {
+                        return Err(ProtocolError::BadValue {
+                            field: "gesture phase",
+                            value: v as u32,
+                        })
+                    }
                 };
                 let has_pose = r.u8()? & 1 != 0;
                 let preferred_action = r.u8()?;
@@ -719,17 +746,32 @@ impl Message {
                 let kind = match r.u8()? {
                     1 => HapticKind::Alignment,
                     2 => HapticKind::PathCompleted,
-                    v => return Err(ProtocolError::BadValue { field: "haptic kind", value: v as u32 }),
+                    v => {
+                        return Err(ProtocolError::BadValue {
+                            field: "haptic kind",
+                            value: v as u32,
+                        })
+                    }
                 };
                 let _ = r.u8()?;
                 let _ = r.u16()?;
-                Message::Haptic(Haptic { kind, x: r.f32()?, y: r.f32()? })
+                Message::Haptic(Haptic {
+                    kind,
+                    x: r.f32()?,
+                    y: r.f32()?,
+                })
             }
             ty::MAPPING_INFO => {
                 let area = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
-                Message::MappingInfo(MappingInfo { area, output_name: r.string()? })
+                Message::MappingInfo(MappingInfo {
+                    area,
+                    output_name: r.string()?,
+                })
             }
-            ty::PING => Message::Ping(Ping { id: r.u32()?, t1_ns: r.u64()? }),
+            ty::PING => Message::Ping(Ping {
+                id: r.u32()?,
+                t1_ns: r.u64()?,
+            }),
             ty::PONG => Message::Pong(Pong {
                 id: r.u32()?,
                 t1_ns: r.u64()?,
@@ -748,7 +790,12 @@ impl Message {
                 let codec = match r.u8()? {
                     1 => VideoCodec::H264,
                     2 => VideoCodec::Hevc,
-                    v => return Err(ProtocolError::BadValue { field: "codec", value: v as u32 }),
+                    v => {
+                        return Err(ProtocolError::BadValue {
+                            field: "codec",
+                            value: v as u32,
+                        })
+                    }
                 };
                 let n = r.u8()? as usize;
                 let _ = r.u16()?;
@@ -759,7 +806,13 @@ impl Message {
                 for _ in 0..n {
                     parameter_sets.push(r.blob16()?);
                 }
-                Message::VideoConfig(VideoConfig { codec, width, height, fps_milli, parameter_sets })
+                Message::VideoConfig(VideoConfig {
+                    codec,
+                    width,
+                    height,
+                    fps_milli,
+                    parameter_sets,
+                })
             }
             ty::VIDEO_FRAME => {
                 let frame_id = r.u32()?;
@@ -789,7 +842,10 @@ impl Message {
                     displayed_ns: r.u64()?,
                 })
             }
-            _ => Message::Unknown { ty, payload: payload.to_vec() },
+            _ => Message::Unknown {
+                ty,
+                payload: payload.to_vec(),
+            },
         };
         // Trailing bytes (from a newer minor version) are deliberately ignored.
         let _ = r.remaining();

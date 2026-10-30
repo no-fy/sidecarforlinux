@@ -47,7 +47,10 @@ mod tests {
     #[test]
     fn combos() {
         assert_eq!(parse_key_combo("ctrl+z").unwrap(), vec![29, 44]);
-        assert_eq!(parse_key_combo("KEY_LEFTSHIFT + KEY_E").unwrap(), vec![42, 18]);
+        assert_eq!(
+            parse_key_combo("KEY_LEFTSHIFT + KEY_E").unwrap(),
+            vec![42, 18]
+        );
         assert_eq!(parse_key_combo("ctrl+]").unwrap(), vec![29, 27]);
         assert!(parse_key_combo("ctrl+nosuchkey").is_err());
     }

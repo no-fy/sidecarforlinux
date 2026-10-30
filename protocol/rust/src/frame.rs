@@ -98,7 +98,10 @@ mod tests {
     fn rejects_oversized_and_empty() {
         let mut d = FrameDecoder::new();
         d.push(&((MAX_FRAME_LEN as u32) + 1).to_le_bytes());
-        assert!(matches!(d.next_frame(), Err(ProtocolError::FrameTooLarge(_))));
+        assert!(matches!(
+            d.next_frame(),
+            Err(ProtocolError::FrameTooLarge(_))
+        ));
         let mut d = FrameDecoder::new();
         d.push(&0u32.to_le_bytes());
         assert_eq!(d.next_frame(), Err(ProtocolError::EmptyFrame));

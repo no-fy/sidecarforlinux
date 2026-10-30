@@ -35,7 +35,12 @@ pub fn commitment(fp_ipad: &Fingerprint, nonce_ipad: &Nonce) -> [u8; 32] {
 }
 
 /// 6-digit code, 0..=999_999.
-pub fn sas(fp_daemon: &Fingerprint, fp_ipad: &Fingerprint, nonce_daemon: &Nonce, nonce_ipad: &Nonce) -> u32 {
+pub fn sas(
+    fp_daemon: &Fingerprint,
+    fp_ipad: &Fingerprint,
+    nonce_daemon: &Nonce,
+    nonce_ipad: &Nonce,
+) -> u32 {
     let mut h = Sha256::new();
     h.update(SAS_DOMAIN);
     h.update(fp_daemon);
@@ -53,7 +58,10 @@ pub fn format_sas(code: u32) -> String {
 
 /// Lower-case hex, colon separated pairs ("ab:cd:...") for display.
 pub fn format_fingerprint(fp: &Fingerprint) -> String {
-    fp.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
+    fp.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Plain lower-case hex (storage format).

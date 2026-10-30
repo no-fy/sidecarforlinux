@@ -30,7 +30,7 @@ pub const PROTOCOL_MINOR: u16 = 0;
 pub const HELLO_MAGIC: [u8; 4] = *b"SCLP";
 
 /// TCP port the iPad app listens on (USB via usbmux and Wi-Fi).
-pub const DEFAULT_PORT: u16 = 47800;
+pub const DEFAULT_PORT: u16 = 47811;
 
 /// Bonjour / DNS-SD service type advertised by the iPad app over Wi-Fi.
 pub const BONJOUR_SERVICE_TYPE: &str = "_sidecarlinux._tcp";

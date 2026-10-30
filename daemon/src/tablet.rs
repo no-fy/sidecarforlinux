@@ -15,9 +15,17 @@ pub const TILT_MAX_DEG: i32 = 90;
 /// Resolution of the tilt axes in units per radian (kernel convention; the
 /// Wacom driver uses 57 too). 1 unit ≈ 1°.
 pub const TILT_RESOLUTION: i32 = 57;
-/// ABS_Z (barrel roll): tenths of a degree in [-1800, 1799].
-pub const ROLL_MIN: i32 = -1800;
-pub const ROLL_MAX: i32 = 1799;
+/// ABS_Z (barrel roll): tenths of a degree, 0..=3599.
+pub const ROLL_MIN: i32 = 0;
+pub const ROLL_MAX: i32 = 3599;
+/// libinput converts ABS_Z to rotation as `(v - min) / (max - min + 1) * 360 + 90`
+/// (the +90° is for the Wacom Art Pen's zero position). We subtract it so
+/// the rotation applications see equals the pencil's roll angle.
+pub const LIBINPUT_ROTATION_OFFSET_DEG: f64 = 90.0;
+/// Default pressure floor while touching: libinput only reports tip-down
+/// once pressure reaches 5% of the range (tip-up at 1%), so a feather-light
+/// pencil touch must still be sent at ≥ 5% to register as contact.
+pub const DEFAULT_MIN_CONTACT_PRESSURE: f64 = 0.06;
 /// ABS_DISTANCE: hover height, 0 = touching, DISTANCE_MAX = top of hover range.
 pub const DISTANCE_MAX: i32 = 1023;
 /// ABS_X/ABS_Y resolution in units per millimetre.
@@ -34,7 +42,11 @@ pub struct TabletGeometry {
 
 impl TabletGeometry {
     pub fn from_surface(s: &SurfaceInfo) -> Self {
-        let ppi = if s.points_per_inch > 1.0 { s.points_per_inch } else { 132.0 };
+        let ppi = if s.points_per_inch > 1.0 {
+            s.points_per_inch
+        } else {
+            132.0
+        };
         let w_mm = s.width_pt as f64 / ppi as f64 * 25.4;
         let h_mm = s.height_pt as f64 / ppi as f64 * 25.4;
         TabletGeometry {
@@ -64,16 +76,20 @@ pub fn tilt_degrees(altitude: f64, azimuth: f64) -> (f64, f64) {
     (tx.clamp(-90.0, 90.0), ty.clamp(-90.0, 90.0))
 }
 
-/// Barrel roll radians → ABS_Z value (tenths of a degree, wrapped to
-/// [-180°, 180°)).
+/// Barrel roll radians → ABS_Z value (tenths of a degree in [0, 360)),
+/// pre-compensated for libinput's +90° rotation offset.
 pub fn roll_to_abs(roll: f64) -> i32 {
-    let mut deg = roll.to_degrees() % 360.0;
-    if deg >= 180.0 {
-        deg -= 360.0;
-    } else if deg < -180.0 {
-        deg += 360.0;
-    }
-    ((deg * 10.0).round() as i32).clamp(ROLL_MIN, ROLL_MAX)
+    let deg = (roll.to_degrees() - LIBINPUT_ROTATION_OFFSET_DEG).rem_euclid(360.0);
+    ((deg * 10.0).round() as i32)
+        .rem_euclid(3600)
+        .clamp(ROLL_MIN, ROLL_MAX)
+}
+
+/// What libinput reports as rotation (degrees) for an ABS_Z value; used by
+/// tests to prove the round trip.
+pub fn libinput_rotation_deg(abs_z: i32) -> f64 {
+    let v = (abs_z - ROLL_MIN) as f64 / (ROLL_MAX - ROLL_MIN + 1) as f64;
+    (v * 360.0 + LIBINPUT_ROTATION_OFFSET_DEG).rem_euclid(360.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +124,11 @@ pub struct MapperConfig {
 
 impl Default for MapperConfig {
     fn default() -> Self {
-        MapperConfig { area: [0.0, 0.0, 1.0, 1.0], use_predicted: false, min_contact_pressure: 0.0 }
+        MapperConfig {
+            area: [0.0, 0.0, 1.0, 1.0],
+            use_predicted: false,
+            min_contact_pressure: DEFAULT_MIN_CONTACT_PRESSURE,
+        }
     }
 }
 
@@ -129,7 +149,15 @@ pub struct PenMapper {
     synthetic_prox: bool,
 }
 
-const ABS_SLOTS: [u16; 7] = [ABS_X, ABS_Y, ABS_PRESSURE, ABS_DISTANCE, ABS_TILT_X, ABS_TILT_Y, ABS_Z];
+const ABS_SLOTS: [u16; 7] = [
+    ABS_X,
+    ABS_Y,
+    ABS_PRESSURE,
+    ABS_DISTANCE,
+    ABS_TILT_X,
+    ABS_TILT_Y,
+    ABS_Z,
+];
 
 fn slot(code: u16) -> usize {
     ABS_SLOTS.iter().position(|c| *c == code).unwrap()
@@ -144,7 +172,11 @@ impl PenMapper {
             pending_tool: None,
             in_prox: false,
             touching: false,
-            buttons: [(BTN_STYLUS, false), (BTN_STYLUS2, false), (BTN_STYLUS3, false)],
+            buttons: [
+                (BTN_STYLUS, false),
+                (BTN_STYLUS2, false),
+                (BTN_STYLUS3, false),
+            ],
             last_abs: [None; 8],
             last_pos: None,
             synthetic_prox: false,
@@ -197,7 +229,8 @@ impl PenMapper {
         let floor = self.cfg.min_contact_pressure.clamp(0.0, 1.0);
         let p = p.clamp(0.0, 1.0);
         let v = floor + p * (1.0 - floor);
-        ((v * PRESSURE_MAX as f64).round() as i32).clamp(if floor > 0.0 { 1 } else { 0 }, PRESSURE_MAX)
+        ((v * PRESSURE_MAX as f64).round() as i32)
+            .clamp(if floor > 0.0 { 1 } else { 0 }, PRESSURE_MAX)
     }
 
     /// Position + angle axes shared by every sample type.
@@ -362,7 +395,12 @@ impl PenMapper {
     /// the tool is in proximity (libinput drops them otherwise), so if the
     /// pen is away we bring it into proximity at `at` (or the last known
     /// position) for the duration of the press.
-    pub fn button(&mut self, code: u16, down: bool, at: Option<(f64, f64, f64, f64)>) -> Vec<Frame> {
+    pub fn button(
+        &mut self,
+        code: u16,
+        down: bool,
+        at: Option<(f64, f64, f64, f64)>,
+    ) -> Vec<Frame> {
         let mut frames = Vec::new();
         let i = match self.buttons.iter().position(|(c, _)| *c == code) {
             Some(i) => i,

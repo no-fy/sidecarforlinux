@@ -2,7 +2,8 @@
 
 use crate::events::*;
 use crate::tablet::{
-    Frame, TabletGeometry, DISTANCE_MAX, PRESSURE_MAX, ROLL_MAX, ROLL_MIN, TILT_MAX_DEG, TILT_RESOLUTION,
+    Frame, TabletGeometry, DISTANCE_MAX, PRESSURE_MAX, ROLL_MAX, ROLL_MIN, TILT_MAX_DEG,
+    TILT_RESOLUTION,
 };
 use anyhow::{Context, Result};
 use std::io;
@@ -64,18 +65,32 @@ pub struct UinputSink {
 }
 
 fn abs(code: u16, min: i32, max: i32, res: i32) -> evdev::UinputAbsSetup {
-    evdev::UinputAbsSetup::new(evdev::AbsoluteAxisCode(code), evdev::AbsInfo::new(0, min, max, 0, 0, res))
+    evdev::UinputAbsSetup::new(
+        evdev::AbsoluteAxisCode(code),
+        evdev::AbsInfo::new(0, min, max, 0, 0, res),
+    )
 }
 
 impl UinputSink {
     pub fn create(geo: TabletGeometry, opts: &DeviceOptions) -> Result<Self> {
         use evdev::{AttributeSet, BusType, InputId, KeyCode, PropType};
         let mut keys = AttributeSet::<KeyCode>::new();
-        for k in [BTN_TOOL_PEN, BTN_TOOL_RUBBER, BTN_TOUCH, BTN_STYLUS, BTN_STYLUS2, BTN_STYLUS3] {
+        for k in [
+            BTN_TOOL_PEN,
+            BTN_TOOL_RUBBER,
+            BTN_TOUCH,
+            BTN_STYLUS,
+            BTN_STYLUS2,
+            BTN_STYLUS3,
+        ] {
             keys.insert(KeyCode(k));
         }
         let mut props = AttributeSet::<PropType>::new();
-        props.insert(if opts.direct { PropType::DIRECT } else { PropType::POINTER });
+        props.insert(if opts.direct {
+            PropType::DIRECT
+        } else {
+            PropType::POINTER
+        });
         let pen = evdev::uinput::VirtualDevice::builder()
             .context("opening /dev/uinput (see docs/MORNING.md: udev rule + uinput group)")?
             .name(PEN_DEVICE_NAME)
@@ -86,8 +101,18 @@ impl UinputSink {
             .with_absolute_axis(&abs(ABS_Y, 0, geo.y_max, geo.resolution))?
             .with_absolute_axis(&abs(ABS_PRESSURE, 0, PRESSURE_MAX, 0))?
             .with_absolute_axis(&abs(ABS_DISTANCE, 0, DISTANCE_MAX, 0))?
-            .with_absolute_axis(&abs(ABS_TILT_X, -TILT_MAX_DEG, TILT_MAX_DEG, TILT_RESOLUTION))?
-            .with_absolute_axis(&abs(ABS_TILT_Y, -TILT_MAX_DEG, TILT_MAX_DEG, TILT_RESOLUTION))?
+            .with_absolute_axis(&abs(
+                ABS_TILT_X,
+                -TILT_MAX_DEG,
+                TILT_MAX_DEG,
+                TILT_RESOLUTION,
+            ))?
+            .with_absolute_axis(&abs(
+                ABS_TILT_Y,
+                -TILT_MAX_DEG,
+                TILT_MAX_DEG,
+                TILT_RESOLUTION,
+            ))?
             .with_absolute_axis(&abs(ABS_Z, ROLL_MIN, ROLL_MAX, 0))?
             .build()
             .context("creating uinput pen device")?;
@@ -102,13 +127,21 @@ impl UinputSink {
             Some(
                 evdev::uinput::VirtualDevice::builder()?
                     .name(KEYS_DEVICE_NAME)
-                    .input_id(InputId::new(BusType::BUS_VIRTUAL, VENDOR_ID, PRODUCT_ID + 1, 1))
+                    .input_id(InputId::new(
+                        BusType::BUS_VIRTUAL,
+                        VENDOR_ID,
+                        PRODUCT_ID + 1,
+                        1,
+                    ))
                     .with_keys(&ks)?
                     .build()
                     .context("creating uinput keyboard device")?,
             )
         };
-        Ok(UinputSink { pen, keys: keys_dev })
+        Ok(UinputSink {
+            pen,
+            keys: keys_dev,
+        })
     }
 }
 
@@ -121,8 +154,10 @@ impl EventSink for UinputSink {
                 None => return Ok(()),
             },
         };
-        let evs: Vec<evdev::InputEvent> =
-            frame.iter().map(|e| evdev::InputEvent::new(e.ty, e.code, e.value)).collect();
+        let evs: Vec<evdev::InputEvent> = frame
+            .iter()
+            .map(|e| evdev::InputEvent::new(e.ty, e.code, e.value))
+            .collect();
         d.emit(&evs)
     }
 

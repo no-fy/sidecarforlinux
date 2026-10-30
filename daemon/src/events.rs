@@ -35,10 +35,18 @@ pub struct RawEvent {
 
 impl RawEvent {
     pub const fn key(code: u16, down: bool) -> Self {
-        RawEvent { ty: EV_KEY, code, value: down as i32 }
+        RawEvent {
+            ty: EV_KEY,
+            code,
+            value: down as i32,
+        }
     }
     pub const fn abs(code: u16, value: i32) -> Self {
-        RawEvent { ty: EV_ABS, code, value }
+        RawEvent {
+            ty: EV_ABS,
+            code,
+            value,
+        }
     }
 }
 
