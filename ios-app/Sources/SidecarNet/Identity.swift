@@ -58,33 +58,27 @@ public struct DeviceIdentity {
     }
 
     private static func create(_ ns: Namespace) throws -> DeviceIdentity {
-        // 1. Key: generated in software so swift-certificates can sign with it,
-        //    then stored in the keychain.
-        let key = P256.Signing.PrivateKey()
-        let attrs: [CFString: Any] = [
-            kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeyClass: kSecAttrKeyClassPrivate,
-            kSecAttrKeySizeInBits: 256,
-        ]
-        var cfErr: Unmanaged<CFError>?
-        guard let secKey = SecKeyCreateWithData(key.x963Representation as CFData, attrs as CFDictionary, &cfErr) else {
-            throw cfErr!.takeRetainedValue() as Error
-        }
-        var keyItem: [CFString: Any] = [
-            kSecClass: kSecClassKey,
-            kSecValueRef: secKey,
+        // 1. Key: P-256, generated inside the keychain (the private key never
+        //    leaves it; swift-certificates signs through SecKey).
+        var keyAttrs: [CFString: Any] = [
+            kSecAttrIsPermanent: true,
             kSecAttrApplicationTag: ns.keyTag,
+            kSecAttrLabel: ns.certLabel,
         ]
         #if os(iOS)
         // iOS: data-protection keychain, never synced or backed up off-device.
-        // (On macOS this attribute selects the data-protection keychain, which
-        // needs an entitlement unsigned test runners lack; the file keychain
-        // is used there instead.)
-        keyItem[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        // (On macOS this attribute would select the data-protection keychain,
+        // which needs an entitlement unsigned test runners lack.)
+        keyAttrs[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         #endif
-        var status = SecItemAdd(keyItem as CFDictionary, nil)
-        guard status == errSecSuccess || status == errSecDuplicateItem else {
-            throw IdentityError.keychain(status, "add key")
+        let keyParams: [CFString: Any] = [
+            kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits: 256,
+            kSecPrivateKeyAttrs: keyAttrs,
+        ]
+        var cfErr: Unmanaged<CFError>?
+        guard let secKey = SecKeyCreateRandomKey(keyParams as CFDictionary, &cfErr) else {
+            throw cfErr!.takeRetainedValue() as Error
         }
 
         // 2. Self-signed X.509 v3 certificate (digitalSignature is mandatory
@@ -94,7 +88,7 @@ public struct DeviceIdentity {
             OrganizationName("sidecarforlinux")
         }
         let now = Date()
-        let privateKey = Certificate.PrivateKey(key)
+        let privateKey = try Certificate.PrivateKey(secKey)
         let cert = try Certificate(
             version: .v3,
             serialNumber: Certificate.SerialNumber(),
@@ -118,7 +112,7 @@ public struct DeviceIdentity {
         guard let secCert = SecCertificateCreateWithData(nil, Data(der) as CFData) else {
             throw IdentityError.keychain(errSecDecode, "certificate DER")
         }
-        status = SecItemAdd([
+        let status = SecItemAdd([
             kSecClass: kSecClassCertificate,
             kSecValueRef: secCert,
             kSecAttrLabel: ns.certLabel,
