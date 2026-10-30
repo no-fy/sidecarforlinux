@@ -101,6 +101,8 @@ public final class PeerServer: @unchecked Sendable {
     public let trust: TrustStore
     private let usbPort: UInt16
     private var usbListener: NWListener?
+    /// Same port on [::1], in case usbmux forwards over IPv6 loopback.
+    private var usbListener6: NWListener?
     private var wifiListener: NWListener?
     /// Every open connection (strong refs: NWConnection handlers only hold
     /// weak references to their PeerConnection).
@@ -127,6 +129,7 @@ public final class PeerServer: @unchecked Sendable {
             self.wifiEnabled = wifi
             if !Self.alive(self.usbListener) {
                 self.usbListener?.cancel()
+                self.usbListener6?.cancel()
                 self.startUSBListener()
             }
             if wifi && !Self.alive(self.wifiListener) {
@@ -148,8 +151,10 @@ public final class PeerServer: @unchecked Sendable {
     public func stop() {
         queue.async {
             self.usbListener?.cancel()
+            self.usbListener6?.cancel()
             self.wifiListener?.cancel()
             self.usbListener = nil
+            self.usbListener6 = nil
             self.wifiListener = nil
             for c in self.connections { c.close(code: .shuttingDown, reason: "iPad app stopped") }
             self.connections.removeAll()
@@ -179,6 +184,7 @@ public final class PeerServer: @unchecked Sendable {
             self.connections.removeAll()
             self.current = nil
             self.usbListener?.cancel()
+            self.usbListener6?.cancel()
             self.wifiListener?.cancel()
             self.startListeners()
         }
@@ -211,17 +217,29 @@ public final class PeerServer: @unchecked Sendable {
     }
 
     private func startUSBListener() {
+        usbListener = makeLoopbackListener(.ipv4(.loopback), name: "USB", required: true)
+        // Optional: failure to bind ::1 (IPv6 off) is not an error.
+        usbListener6 = makeLoopbackListener(.ipv6(.loopback), name: "USB (IPv6)", required: false)
+    }
+
+    private func makeLoopbackListener(_ host: NWEndpoint.Host, name: String, required: Bool) -> NWListener? {
         let params = makeTLSParameters(identity: identity.identity, queue: queue) { _ in true }
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback),
-                                                           port: NWEndpoint.Port(rawValue: usbPort)!)
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: host, port: NWEndpoint.Port(rawValue: usbPort)!)
         do {
             let l = try NWListener(using: params)
             l.newConnectionHandler = { [weak self] c in self?.accept(c, viaUSB: true) }
-            l.stateUpdateHandler = { [weak self] st in self?.listenerState(st, name: "USB") }
+            l.stateUpdateHandler = { [weak self] st in
+                if required {
+                    self?.listenerState(st, name: name)
+                } else if case .failed = st {
+                    l.cancel()
+                }
+            }
             l.start(queue: queue)
-            usbListener = l
+            return l
         } catch {
-            report(.failed("USB listener: \(error)"))
+            if required { report(.failed("\(name) listener: \(error)")) }
+            return nil
         }
     }
 
