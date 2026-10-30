@@ -65,11 +65,14 @@ Labels:
 | Glass-to-glass latency | Needs phase 2 plus a camera, or the loopback method in the design doc | Later |
 | `touchesEstimatedPropertiesUpdated` refinements | Deliberately not sent in v1 (latency first, DECISIONS D10) | A protocol minor version if pressure on stroke starts feels off |
 | Phase 3 (webcam, BT HID) | Out of tonight's scope | Later |
-| iOS app unit tests | The app's logic is mostly UIKit glue; only the protocol is unit-tested | Add if bugs show up |
+| Unit tests for the iPad's UIKit capture logic | The networking, identity, pairing and video core (`SidecarNet`) has 8 macOS tests. The UIKit capture view (touch/hover ordering, gestures) can only be exercised on an iPad. | Your `--record` files from MORNING.md §7 become regression fixtures |
 
-**Nothing got stuck for more than 45 minutes.** The two CI failures on the iPad side were fixed quickly:
-- an `NSObject.load()` name clash in a test;
-- xtool 1.24.0 failing to package a Linux-only resource bundle declared by swift-crypto ≥ 4. Worked around by pinning swift-crypto 3.x. Worth reporting upstream to xtool.
+**Nothing got stuck for more than 45 minutes.** The CI failures along the way, all fixed:
+- xtool 1.24.0 failed to package a Linux-only resource bundle declared by swift-crypto ≥ 4. Worked around by pinning swift-crypto 3.x. Worth reporting upstream to xtool.
+- macOS keychain error `-34018` when importing a raw key. Fixed by generating the key inside the keychain (`SecKeyCreateRandomKey`), which is also the better design on iOS.
+- Real-uinput test reader overflow; `NSObject.load()` name clash; Swift's `Float.pi` rounding toward zero (the golden vectors now use exact bit patterns).
+
+A hand review also caught and fixed a bug that tests couldn't have shown without a device: accepted iPad connections were only weakly referenced, so they would have been deallocated immediately. The macOS tests now cover that path.
 
 ## Phase 2 status (bonus, beyond the overnight plan)
 
@@ -90,4 +93,7 @@ Labels:
 - **The default gesture mapping** is double-tap = eraser toggle and squeeze = BTN_STYLUS2 click (right button → Krita pop-up palette). Change it in `[pencil]`.
 - **Possible security issues in Tether**, found while reading its code (shared fingerprint variable, share extension not verifying the pin): see [tether.md](tether.md). Not reported upstream; your call.
 - **A small leak during the overnight research:** one of the research steps sent your email address in the User-Agent header of a single crates.io version lookup (an HTTP request to crates.io's public API). Nothing else left the VM.
-- **What the VM ran:** git, gh, Rust, evtest, libinput-tools, shellcheck, librsvg (for the icon), and a headless KWin 6.3.6 with PipeWire (Debian packages) for the phase 2 probe. No xtool, iOS SDK or Xcode was installed, and no Apple credentials exist anywhere in this repo or in CI.
+- **What the VM ran:**
+  - git, gh, Rust, evtest, libinput-tools, shellcheck, librsvg (for the icon)
+  - a headless KWin 6.3.6 with PipeWire, for the phase 2 probe
+  - GStreamer with x264, to make the video test clip and try the test-pattern pipeline No xtool, iOS SDK or Xcode was installed, and no Apple credentials exist anywhere in this repo or in CI.
