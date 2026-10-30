@@ -43,7 +43,7 @@ daemon/       Rust daemon `sidecard`: transport, TLS/pairing, uinput tablet, lat
 protocol/     wire protocol: Rust crate, Swift package, golden test vectors
 ios-app/      iPad app (Swift, UIKit), built with xtool (SwiftPM + xtool.yml)
 scripts/      doctor.sh, setup-system.sh, install-daemon.sh, resign-ipad.sh, CI checks
-docs/         protocol.md, DECISIONS.md, MORNING.md, REPORT.md, latency.md, phase2 design, research
+docs/         architecture.md, protocol.md, DECISIONS.md, MORNING.md, REPORT.md, latency.md, phase2 design, research
 ```
 
 ## Setup on Arch Linux
