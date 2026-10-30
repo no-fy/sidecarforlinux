@@ -37,7 +37,7 @@ Machine as documented (not verified): Mac Pro 2019, Arch Linux with the t2linux 
 | Package | Why |
 |---|---|
 | `pipewire`, `wireplumber` | screen capture (already in Plasma) |
-| `gstreamer`, `gst-plugins-bad` (`va` plugin), `gst-plugin-pipewire`, `gst-plugins-ugly` (x264 fallback) | encode pipeline, if the GStreamer route is chosen |
+| `gstreamer`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, **`gst-plugin-va`** (VA-API encoders, separate package on Arch), `gst-plugin-pipewire`, `gst-plugins-ugly` (x264 fallback and test pattern) | the encoder subprocess (`gst-launch-1.0`, DECISIONS D18). Package names checked against archlinux.org on 2026-10-30. |
 | `ffmpeg` (alternative to GStreamer) | `h264_vaapi` |
 | `libva-mesa-driver` / `mesa` | VA-API encode on radeonsi |
 

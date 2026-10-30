@@ -186,6 +186,22 @@ Research notes with sources for everything below are in [`docs/research/`](resea
 - **Transport and decode:** AVCC framing on a separate TCP channel, decoded on the iPad with VideoToolbox.
 - See [`docs/phase2-virtual-display.md`](phase2-virtual-display.md).
 
+## D18. Phase 2 encoder runs as a GStreamer subprocess
+
+- **Options**
+  1. gstreamer-rs bindings in the daemon.
+  2. libav/FFmpeg bindings (as KPipeWire does).
+  3. A `gst-launch-1.0` subprocess that writes H.264 Annex-B to stdout.
+- **Choice:** 3.
+- **Why**
+  - It needs no `-dev` libraries or bindgen in the daemon build.
+  - The pipeline is a single string, so you can test and tune it with `gst-launch-1.0` alone, which matters for driver quirks on your specific GPU.
+  - It's easy to switch between VA-API and x264.
+  - The pipe adds microseconds.
+  - Access units are detected in the daemon (AUD or first-slice boundaries), so any encoder works.
+- **Cost:** no programmatic IDR requests. Encoders produce a keyframe every 2 s instead.
+- **Undo:** `videochan::VideoSource::Command` is one variant; a gstreamer-rs source can replace it without touching the protocol or the iPad.
+
 ## D17. Coexisting with Tether
 
 - **No overlap:** no clipboard, file or notification features. Different port (5134 vs 47811/47812) and different Bonjour type (`_tether._tcp` vs `_sidecarlinux._tcp`).

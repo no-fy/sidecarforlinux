@@ -181,18 +181,41 @@ Paste the printed report. It goes into [latency.md](latency.md).
 2. Run `sidecard pair --transport wifi`.
 3. Then `sidecard latency --transport wifi --duration 30` and paste it.
 
-## 10. Optional: phase 2 probe (1 min) → **paste back**
+## 10. Optional: phase 2, virtual display (experimental, 5 min) → **paste back**
 
-This asks KWin for a virtual monitor sized like the iPad Air 11" and keeps it for 30 s. Nothing is streamed to the iPad yet.
+This needs the GStreamer bits:
 
 ```bash
-sidecard display-probe --seconds 30 &
-sleep 3; kscreen-doctor -o | grep -A4 Virtual-ipad
+sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-plugin-va gst-plugin-pipewire libva-utils
 ```
 
-Expected: a line `virtual output Virtual-ipad: 2360x1640 @ scale 2 ... PipeWire node N`, and a `Virtual-ipad` output in System Settings → Display while it runs.
-- For the 13" model: `--width 2732 --height 2048`.
-- If it says KWin did not offer the protocol, check that `~/.local/share/applications/sidecard.desktop` exists (`scripts/install-daemon.sh` writes it), then log out and back in.
+1. Check that KWin can create the monitor (no iPad needed):
+
+   ```bash
+   sidecard display-probe --seconds 20 &
+   sleep 3; kscreen-doctor -o | grep -A4 Virtual-ipad
+   ```
+
+   Expected: `virtual output Virtual-ipad: 2360x1640 @ scale 2 ... PipeWire node N`, and the output appears in System Settings → Display.
+   - For the 13" model: `--width 2732 --height 2048`.
+   - If KWin didn't offer the protocol, check that `~/.local/share/applications/sidecard.desktop` exists (`scripts/install-daemon.sh` writes it), then log out and back in.
+2. **With the iPad (app open, paired):** first the test pattern, which proves the video path:
+
+   ```bash
+   systemctl --user stop sidecard 2>/dev/null
+   sidecard run --video test-pattern      # a bouncing ball should fill the iPad; the pencil still works
+   ```
+
+3. Then the real thing: a virtual monitor sized like the iPad, captured, VA-API encoded, streamed, with the pen pinned to it.
+
+   ```bash
+   sidecard run --video virtual                         # VA-API
+   # if that fails: echo -e '[video]\nencoder = "x264"' >> ~/.config/sidecarforlinux/config.toml
+   ```
+
+   Drag a window onto "Virtual-ipad" and draw on it with the pencil.
+
+Paste the terminal output either way, especially any GStreamer error. If VA-API fails, also paste `vainfo`.
 
 ## 11. Optional: collaboration
 

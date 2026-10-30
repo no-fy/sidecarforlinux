@@ -10,7 +10,12 @@
   - **Double-tap** and **squeeze** mapped to the eraser, stylus buttons or shortcuts
   - **Pencil Pro haptics** when the PC switches tools
   - Appears as a real tablet in libinput, KDE's *Drawing Tablet* settings and Krita
-- **Virtual display (phase 2, designed, not built yet)**: a KWin virtual monitor at the iPad's resolution, VA-API H.264 to the iPad, with the pen mapped onto it.
+- **Virtual display (phase 2, experimental, untested on real hardware)**:
+  - a KWin virtual monitor at the iPad's resolution
+  - captured from PipeWire and encoded with VA-API H.264 (GStreamer)
+  - streamed on a second TLS channel and shown with `AVSampleBufferDisplayLayer`
+  - the pen pinned onto it
+  - Run it with `sidecard run --video virtual`.
 - **Transport**: USB-C through `usbmuxd` first, Wi-Fi with Bonjour as fallback.
 - **Security**: mutual TLS 1.3 everywhere, pinned certificates, and a 6-digit code confirmed on both devices the first time.
 
@@ -117,6 +122,8 @@ Forget a pairing:
 
 ```
 sidecard run [--pair] [--transport auto|usb|wifi|tcp] [--record FILE] [--dry-run]
+             [--video off|virtual|test-pattern|file:CLIP.h264]   # phase 2, experimental
+sidecard display-probe                # phase 2: create a KWin virtual monitor, print its PipeWire node
 sidecard pair                         # pair a new iPad (asks on this terminal)
 sidecard latency --duration 30        # touch -> uinput latency histogram (docs/latency.md)
 sidecard devices                      # iPads over usbmuxd and mDNS

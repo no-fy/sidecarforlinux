@@ -61,7 +61,7 @@ Labels:
 | Item | Why | Next step |
 |---|---|---|
 | Real-device testing (iPad, Krita, KDE KCM, USB latency) | Only you have the hardware (expected) | MORNING.md |
-| Phase 2 code (virtual display) | Phase 1 went green, so I started milestone 1: `sidecard display-probe` asks KWin for the virtual monitor.<br>• **Tested against a real headless KWin 6.3.6 in the VM:** the protocol works and KWin's replies are handled. KWin's headless backend can't create virtual outputs, and screencasting needs OpenGL, which the container lacks (no `/dev/dri`).<br>• **So creating the monitor is built but untested.**<br>• No capture or encode code yet. The design is in [phase2-virtual-display.md](phase2-virtual-display.md); the video messages are specified and vector-tested. | Run MORNING.md §10 on your machine, then PipeWire capture |
+| Phase 2 on real hardware (KWin virtual monitor, PipeWire capture, VA-API) | Phase 1 went green, so phase 2 got implemented as far as the VM allows ([phase2-virtual-display.md §5](phase2-virtual-display.md#5-milestones-and-status)).<br>**Tested:**<br>• the video channel (Rust↔Rust, Swift↔Swift, and the **real Rust daemon ↔ Swift PeerServer** on macOS);<br>• Annex-B → AVCC;<br>• **VideoToolbox decoding** of Rust-produced frames;<br>• a live GStreamer x264 test pattern streamed in CI.<br>**Blocked in the VM:** KWin's headless backend can't create virtual outputs, and screencasting needs OpenGL (no `/dev/dri` in the container).<br>So `sidecard run --video virtual` (zkde virtual monitor → `pipewiresrc` → `vah264enc`) and the iPad `VideoView` are **built but untested**. | MORNING.md §10 |
 | Glass-to-glass latency | Needs phase 2 plus a camera, or the loopback method in the design doc | Later |
 | `touchesEstimatedPropertiesUpdated` refinements | Deliberately not sent in v1 (latency first, DECISIONS D10) | A protocol minor version if pressure on stroke starts feels off |
 | Phase 3 (webcam, BT HID) | Out of tonight's scope | Later |
@@ -70,6 +70,18 @@ Labels:
 **Nothing got stuck for more than 45 minutes.** The two CI failures on the iPad side were fixed quickly:
 - an `NSObject.load()` name clash in a test;
 - xtool 1.24.0 failing to package a Linux-only resource bundle declared by swift-crypto ≥ 4. Worked around by pinning swift-crypto 3.x. Worth reporting upstream to xtool.
+
+## Phase 2 status (bonus, beyond the overnight plan)
+
+| Piece | Status |
+|---|---|
+| Virtual monitor via KWin `zkde_screencast` (`sidecard display-probe`, `run --video virtual`) | **Built.** Protocol exchange tested against headless KWin 6.3.6; creating the output is **untested** (needs the DRM backend). |
+| Capture + encode (`gst-launch-1.0` subprocess: `pipewiresrc` → VA-API `vah264enc`, or x264) | x264 test-pattern pipeline **tested** (CI). The VA-API/PipeWire pipeline is **untested**. |
+| Annex-B → AVCC access units, parameter sets | **Tested** (unit tests and the golden vector) |
+| Video channel (2nd TLS connection bound to the pen session) | **Tested** Rust↔Rust, Swift↔Swift, and Rust daemon ↔ iPad networking code on macOS |
+| iPad decode/display | VideoToolbox decode **tested** on macOS; the `AVSampleBufferDisplayLayer` view is **built but untested** |
+| Pen auto-mapped onto the virtual monitor | **Built** (KWin `outputName`); **untested** |
+| End-to-end video latency | **Not measured** |
 
 ## Things you should know
 

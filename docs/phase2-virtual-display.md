@@ -1,6 +1,8 @@
 # Phase 2: virtual display (design)
 
-Status: **design + milestone 1 probe**. Only `sidecard display-probe` exists: it asks KWin for the virtual monitor and prints its PipeWire node. The wire messages are already specified in [protocol.md §6](protocol.md#6-messages-video-channel-phase-2-specified-not-implemented) and covered by the golden vectors. The research with sources is in [research/kde-display-encode.md](research/kde-display-encode.md).
+Status: **design + first implementation**. See §5 for what is tested.
+- **Tested end to end:** the video channel, Annex-B → AVCC, iPad decoding (VideoToolbox, macOS) and a live x264 test pattern.
+- **Built but untested:** creating the KWin virtual monitor, PipeWire capture with VA-API encoding, and display on the iPad. The wire messages are already specified in [protocol.md §6](protocol.md#6-messages-video-channel-phase-2-specified-not-implemented) and covered by the golden vectors. The research with sources is in [research/kde-display-encode.md](research/kde-display-encode.md).
 
 ## Goal
 
@@ -97,19 +99,40 @@ When the virtual output exists:
 
 The capture view on the iPad covers exactly the video rectangle, so pen coordinates and pixels line up 1:1 (normalized coordinates are already used).
 
-## 5. Milestones
+## 5. Milestones and status
 
-1. **`sidecard display-probe` (written):** creates the virtual output with `zkde_screencast` and prints the PipeWire node id. `--existing NAME` streams an existing output instead.
-   - **What was tested** in the VM against a headless KWin 6.3.6 (`kwin_wayland --virtual`, `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1`):
-     - The probe binds the protocol (KWin offers v5; we use v4) and sends `stream_virtual_output_with_description`.
-     - KWin's `failed` event is reported properly: "Could not find output". KWin's *virtual* backend can't create outputs; that's implemented by the DRM backend you run on real hardware.
-     - `stream_output` of the headless output fails with "OpenGL compositing is required for screencasting". The container has no `/dev/dri`, so KWin falls back to QPainter.
-   - **Creating the monitor and the PipeWire node therefore needs your machine** (MORNING.md §10).
-   - **Next:** connect PipeWire (pipewire-rs) and print the negotiated format and frame timestamps.
-2. Encode to a file (`.h264`); play it with `ffplay`. Measure encode time per frame.
-3. Video channel to the fake iPad (Rust), round-trip VideoFeedback; then the iPad app with `AVSampleBufferDisplayLayer`.
-4. Pen auto-mapping, cursor overlay, keyframe on request, reconnect.
-5. Latency instrumentation and the tuning listed above.
+Status labels as in REPORT.md.
+
+1. **Virtual monitor: `sidecard display-probe`. Built; protocol exchange tested against KWin 6.3.6; creating the output is untested.**
+   - Creates the output with `zkde_screencast` and prints the PipeWire node id.
+   - `--existing NAME` streams an existing output instead.
+   - **Tested in the VM** against a headless KWin 6.3.6 (`kwin_wayland --virtual`, `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1`):
+     - The protocol binds (KWin offers v5; we use v4) and the request goes out.
+     - KWin's `failed` replies are handled. Its virtual backend can't create outputs ("Could not find output"); the DRM backend on real hardware can.
+     - Screencasting needs OpenGL compositing, which the container (no `/dev/dri`) can't provide.
+2. **Encoder: GStreamer subprocess writing Annex-B to stdout (`daemon/src/videochan.rs`).**
+   - **Tested in CI and the VM with the x264 test pattern:** 2360×1640 at 60 fps from GStreamer → our splitter → video channel → fake iPad. CI asserts frames arrive.
+   - **Built, untested:** the VA-API pipeline (`pipewiresrc path=<node> ! vapostproc ! vah264enc b-frames=0 rate-control=cbr target-usage=3 …`) and the PipeWire → x264 fallback.
+   - **Why a subprocess** (DECISIONS D18): no GStreamer bindings in the daemon, and the encoder is easy to swap and debug with `gst-launch-1.0` alone.
+3. **Annex-B → AVCC access units + parameter sets (`daemon/src/video.rs`). Tested.**
+   - Unit tests cover any chunking, H.264 and HEVC.
+   - A golden vector built from a real x264 clip is decoded by **VideoToolbox on macOS** in CI.
+4. **Video channel. Tested.**
+   - A second TLS connection carries `channel=Video` and the same `session_id`. The iPad accepts it only from the PC that owns the active pen session, and closes it when the pen session ends.
+   - Tested daemon ↔ fake iPad (Rust) and Swift `PeerServer` ↔ TestDaemon.
+   - **Tested against the real Rust daemon on macOS:** it streams the clip, and VideoToolbox decodes all 8 frames.
+5. **iPad display: `VideoView`, an `AVSampleBufferDisplayLayer` with DisplayImmediately, under the transparent pencil surface. Built, untested** (UIKit, needs an iPad).
+6. **`sidecard run --video virtual`. Built, untested.**
+   - Creates the virtual monitor at the iPad's pixel size (surface points × scale).
+   - Pins the pen to it through KWin D-Bus.
+   - Captures and encodes it, then streams it.
+   - MORNING.md §10 has the commands.
+7. **Still to do:**
+   - cursor as metadata, drawn on the iPad (currently embedded in the frames);
+   - keyframe on request (needs encoder control);
+   - VideoFeedback-based latency stats (`sidecard latency --video`);
+   - the 120 Hz custom mode;
+   - glass-to-glass measurement.
 
 ## 6. Open questions for the real machine
 
