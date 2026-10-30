@@ -25,6 +25,17 @@ public extension PeerServerDelegate {
     func videoEnded() {}
 }
 
+/// Takes video straight from the network queue. Without it, frames went
+/// through the main queue, which is busy with 240 Hz pencil touches while
+/// drawing, so a frame could wait up to a display refresh before it was even
+/// queued for display. All calls happen on `PeerServer.queue`.
+public protocol VideoFrameSink: AnyObject {
+    func configure(_ config: VideoConfig)
+    /// Returns false if the frame couldn't be queued for display.
+    func enqueue(_ frame: VideoFrame) -> Bool
+    func reset()
+}
+
 /// Builds TLS 1.3 parameters with our identity, requiring a client
 /// certificate. `accept` decides at handshake time whether a peer
 /// certificate (DER) may proceed; the pairing/trust decision proper happens
@@ -97,6 +108,9 @@ public final class PeerServer: @unchecked Sendable {
     public let queue = DispatchQueue(label: "sidecar.net", qos: .userInteractive)
     // Only touched on the main queue.
     public weak var delegate: PeerServerDelegate?
+    /// Set before `start`; see `VideoFrameSink`. Without one, frames go to the
+    /// delegate on the main queue.
+    public var videoSink: VideoFrameSink?
     public private(set) var identity: DeviceIdentity
     public let trust: TrustStore
     private let usbPort: UInt16
@@ -317,6 +331,7 @@ public final class PeerServer: @unchecked Sendable {
             reportWaitingIfIdle()
         }
         if pc.isVideo && pc.videoStarted {
+            videoSink?.reset()
             onMain { $0.videoEnded() }
         }
     }
@@ -475,11 +490,17 @@ final class PeerConnection {
 
         case (.video, .videoConfig(let c)):
             videoStarted = true
+            server.videoSink?.configure(c)
             server.onMain { $0.videoConfigReceived(c) }
         case (.video, .videoFrame(let f)):
             videoStarted = true
-            server.onMain { $0.videoFrameReceived(f) }
-            send(.videoFeedback(VideoFeedback(frameID: f.frameID, requestKeyframe: false, receivedNs: receivedAt,
+            var shown = true
+            if let sink = server.videoSink {
+                shown = sink.enqueue(f)
+            } else {
+                server.onMain { $0.videoFrameReceived(f) }
+            }
+            send(.videoFeedback(VideoFeedback(frameID: f.frameID, requestKeyframe: !shown, receivedNs: receivedAt,
                                               decodedNs: 0, displayedNs: 0)))
         case (.video, .ping(let p)):
             send(.pong(Pong(id: p.id, t1Ns: p.t1Ns, t2Ns: receivedAt, t3Ns: SessionClock.nowNs())))

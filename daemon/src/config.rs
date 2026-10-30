@@ -51,8 +51,16 @@ output = ""
 # Phase 2 (experimental): off | virtual (KWin virtual monitor sized like the
 # iPad) | test-pattern | file:/path/to/clip.h264
 mode = "off"
-# vaapi (GPU, Mesa) | x264 (software)
+# vaapi (GPU) | vaapi-lp (GPU fixed-function "low power" encoder, Intel) |
+# x264 (software)
 encoder = "vaapi"
+# VA-API speed/quality trade-off: 1 = best quality ... 7 = fastest (lowest
+# latency).
+target_usage = 7
+# Pixel density of the virtual monitor. 0 = the iPad's own (2 = sharp). Lower
+# (e.g. 1.5) means fewer pixels to render, encode and decode: less latency,
+# softer picture.
+scale = 0.0
 bitrate_kbps = 20000
 fps = 60
 "#;
@@ -72,6 +80,8 @@ pub struct Config {
 pub struct VideoCfg {
     pub mode: String,
     pub encoder: String,
+    pub target_usage: u8,
+    pub scale: f64,
     pub bitrate_kbps: u32,
     pub fps: u32,
 }
@@ -81,6 +91,8 @@ impl Default for VideoCfg {
         VideoCfg {
             mode: "off".into(),
             encoder: "vaapi".into(),
+            target_usage: 7,
+            scale: 0.0,
             bitrate_kbps: 20000,
             fps: 60,
         }
@@ -201,8 +213,14 @@ impl Config {
         if !(matches!(m, "off" | "virtual" | "test-pattern") || m.starts_with("file:")) {
             bail!("video.mode must be off, virtual, test-pattern or file:PATH, got {m:?}");
         }
-        if !matches!(self.video.encoder.as_str(), "vaapi" | "x264") {
-            bail!("video.encoder must be vaapi or x264");
+        if !(1..=7).contains(&self.video.target_usage) {
+            bail!("video.target_usage must be 1 (best quality) to 7 (fastest)");
+        }
+        if self.video.scale != 0.0 && !(1.0..=3.0).contains(&self.video.scale) {
+            bail!("video.scale must be 0 (the iPad's own) or between 1.0 and 3.0");
+        }
+        if !matches!(self.video.encoder.as_str(), "vaapi" | "vaapi-lp" | "x264") {
+            bail!("video.encoder must be vaapi, vaapi-lp or x264");
         }
         Ok(())
     }

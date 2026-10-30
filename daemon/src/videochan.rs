@@ -26,6 +26,9 @@ use tokio::sync::mpsc;
 pub enum Encoder {
     /// Mesa VA-API through GStreamer's `va` plugin (AMD/Intel GPUs).
     Vaapi,
+    /// The same, on Intel's fixed-function "low power" encoder
+    /// (`vah264lpenc`, VAEntrypointEncSliceLP): usually faster.
+    VaapiLowPower,
     /// Software x264 (any machine).
     X264,
 }
@@ -104,6 +107,7 @@ pub fn pipewire(
     fps: u32,
     encoder: Encoder,
     kbps: u32,
+    target_usage: u8,
 ) -> VideoSource {
     let mut argv = split("gst-launch-1.0 -q");
     argv.extend([
@@ -115,13 +119,20 @@ pub fn pipewire(
     ]);
     argv.extend(split("queue max-size-buffers=1 leaky=downstream !"));
     match encoder {
-        Encoder::Vaapi => {
+        Encoder::Vaapi | Encoder::VaapiLowPower => {
             argv.extend(split("vapostproc !"));
             argv.push("video/x-raw(memory:VAMemory),format=NV12".into());
             argv.push("!".into());
-            argv.extend(split(
-                "vah264enc b-frames=0 rate-control=cbr target-usage=3",
-            ));
+            argv.push(
+                if encoder == Encoder::Vaapi {
+                    "vah264enc"
+                } else {
+                    "vah264lpenc"
+                }
+                .into(),
+            );
+            argv.extend(split("b-frames=0 rate-control=cbr"));
+            argv.push(format!("target-usage={target_usage}"));
             argv.push(format!("bitrate={kbps}"));
         }
         Encoder::X264 => {

@@ -133,8 +133,15 @@ Status labels as in REPORT.md.
    - Pins the pen to it through KWin D-Bus.
    - Captures and encodes it, then streams it.
    - MORNING.md §10 has the commands.
-7. **Mirroring: done by KDE.** In System Settings → Display, set `Virtual-ipad` as "Replica of" another screen. Tested on your machine. If the video drops while you change display settings, the daemon restarts the channel by itself.
-8. **Still to do:**
+7. **Latency work (from the real machine, 2026-10-30).**
+   - **Measured:** pen input → frame encoded is about 33 ms median (KWin's 60 Hz capture tick, KWin re-rendering the scene for the capture, colour conversion, encoding); encoder out → iPad is under 1 ms over USB.
+   - **Changes:**
+     - the iPad queues frames on the network queue instead of the main queue, where 240 Hz pencil touches could delay them by up to a display refresh;
+     - VA-API `target_usage` defaults to 7 (fastest);
+     - new options `[video] encoder = "vaapi-lp"` (Intel fixed-function encoder) and `[video] scale` (fewer pixels).
+   - **Not changeable from our side:** the virtual output's 60 Hz (the zkde_screencast protocol has no refresh-rate argument).
+8. **Mirroring: done by KDE.** In System Settings → Display, set `Virtual-ipad` as "Replica of" another screen. Tested on your machine. If the video drops while you change display settings, the daemon restarts the channel by itself.
+9. **Still to do:**
    - cursor as metadata, drawn on the iPad (currently embedded in the frames);
    - keyframe on request (needs encoder control);
    - VideoFeedback-based latency stats (`sidecard latency --video`);

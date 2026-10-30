@@ -24,6 +24,7 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
             identity = id
             let s = PeerServer(identity: id, trust: trust)
             s.delegate = self
+            s.videoSink = root.video.sink
             server = s
             root.setFingerprint(Pairing.formatFingerprint(id.fingerprint))
             s.updateSurface(root.surfaceInfo())
@@ -144,17 +145,12 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
 
     func mappingReported(_ mapping: MappingInfo) {}
 
+    // Frames themselves go to `root.video.sink` on the network queue.
     func videoConfigReceived(_ config: VideoConfig) {
-        root.video.configure(config)
         root.setVideoVisible(true)
     }
 
-    func videoFrameReceived(_ frame: VideoFrame) {
-        root.video.enqueue(frame)
-    }
-
     func videoEnded() {
-        root.video.reset()
         root.setVideoVisible(false)
     }
 }

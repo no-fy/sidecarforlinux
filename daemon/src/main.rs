@@ -335,6 +335,9 @@ struct VideoPlan {
     encoder: videochan::Encoder,
     kbps: u32,
     fps: u32,
+    target_usage: u8,
+    /// Virtual monitor pixel density; 0 = the iPad's.
+    scale: f64,
 }
 
 impl VideoPlan {
@@ -344,13 +347,15 @@ impl VideoPlan {
                 .video
                 .clone()
                 .unwrap_or_else(|| env.cfg.video.mode.clone()),
-            encoder: if env.cfg.video.encoder == "x264" {
-                videochan::Encoder::X264
-            } else {
-                videochan::Encoder::Vaapi
+            encoder: match env.cfg.video.encoder.as_str() {
+                "x264" => videochan::Encoder::X264,
+                "vaapi-lp" => videochan::Encoder::VaapiLowPower,
+                _ => videochan::Encoder::Vaapi,
             },
             kbps: env.cfg.video.bitrate_kbps,
             fps: env.cfg.video.fps.max(1),
+            target_usage: env.cfg.video.target_usage,
+            scale: env.cfg.video.scale,
         }
     }
 }
@@ -381,12 +386,15 @@ async fn run_video_plan(
     input_probe: std::sync::Arc<sidecard::clock::InputProbe>,
 ) -> Result<videochan::VideoStats> {
     use videochan::VideoSource;
-    let w = (info.surface.width_pt * info.surface.scale)
-        .round()
-        .max(16.0) as u32;
-    let h = (info.surface.height_pt * info.surface.scale)
-        .round()
-        .max(16.0) as u32;
+    // Virtual monitor pixel density: the iPad's, unless [video] scale lowers
+    // it (fewer pixels to render, encode and decode).
+    let scale = if plan.scale > 0.0 {
+        plan.scale as f32
+    } else {
+        info.surface.scale
+    };
+    let w = (info.surface.width_pt * scale).round().max(16.0) as u32;
+    let h = (info.surface.height_pt * scale).round().max(16.0) as u32;
     // Keeps the virtual output alive (and its Wayland socket drained); see StopOnDrop.
     let mut _keeper: Option<StopOnDrop> = None;
     // Fires if KWin closes the virtual monitor's stream (e.g. while its
@@ -407,7 +415,7 @@ async fn run_video_plan(
             let spec = VirtualOutputSpec {
                 width: w as i32,
                 height: h as i32,
-                scale: info.surface.scale as f64,
+                scale: scale as f64,
                 ..VirtualOutputSpec::ipad_air_11()
             };
             let out_name = spec.output_name();
@@ -451,7 +459,15 @@ async fn run_video_plan(
                     tracing::warn!("could not map the pen to {out_name}: {e:#}");
                 }
             }
-            videochan::pipewire(node, w, h, plan.fps, plan.encoder, plan.kbps)
+            videochan::pipewire(
+                node,
+                w,
+                h,
+                plan.fps,
+                plan.encoder,
+                plan.kbps,
+                plan.target_usage,
+            )
         }
         m => bail!("unsupported video mode {m:?}"),
     };
