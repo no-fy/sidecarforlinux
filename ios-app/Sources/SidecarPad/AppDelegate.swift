@@ -1,3 +1,5 @@
+#if canImport(UIKit)
+import SidecarNet
 import UIKit
 
 @main
@@ -43,3 +45,4 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         controller?.sceneWillResignActive()
     }
 }
+#endif

@@ -5,7 +5,7 @@ import SidecarProtocol
 
 /// Events the server reports to the UI (always delivered on the main queue).
 @MainActor
-protocol PeerServerDelegate: AnyObject {
+public protocol PeerServerDelegate: AnyObject {
     func serverStatusChanged(_ status: PeerServer.Status)
     /// Show the pairing code; call `decide` with the user's answer.
     func pairingRequested(code: String, peerName: String, peerFingerprint: String, decide: @escaping (Bool) -> Void)
@@ -20,7 +20,7 @@ protocol PeerServerDelegate: AnyObject {
 /// certificate (DER) may proceed; the pairing/trust decision proper happens
 /// after the handshake. Kept outside any actor: the verify block runs on
 /// `queue` (see docs/research notes on Swift 6 isolation).
-func makeTLSParameters(identity: SecIdentity, queue: DispatchQueue,
+public func makeTLSParameters(identity: SecIdentity, queue: DispatchQueue,
                        accept: @escaping ([UInt8]) -> Bool) -> NWParameters {
     let tls = NWProtocolTLS.Options()
     let sec = tls.securityProtocolOptions
@@ -52,7 +52,7 @@ func makeTLSParameters(identity: SecIdentity, queue: DispatchQueue,
 }
 
 /// Peer certificate of an established TLS connection.
-func peerCertificateDER(of connection: NWConnection) -> [UInt8]? {
+public func peerCertificateDER(of connection: NWConnection) -> [UInt8]? {
     guard let md = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata else {
         return nil
     }
@@ -72,8 +72,8 @@ func peerCertificateDER(of connection: NWConnection) -> [UInt8]? {
 /// * Wi-Fi: port 47812 advertised over Bonjour as `_sidecarlinux._tcp`. Only
 ///   already-paired PCs get through the TLS handshake, unless the user opened
 ///   the pairing window in the app.
-final class PeerServer {
-    enum Status: Equatable {
+public final class PeerServer: @unchecked Sendable {
+    public enum Status: Equatable, Sendable {
         case starting
         case waiting(wifi: Bool)
         case handshaking(viaUSB: Bool)
@@ -82,13 +82,14 @@ final class PeerServer {
         case failed(String)
     }
 
-    static let wifiPort: UInt16 = 47812
+    public static let wifiPort: UInt16 = 47812
 
-    let queue = DispatchQueue(label: "sidecar.net", qos: .userInteractive)
+    public let queue = DispatchQueue(label: "sidecar.net", qos: .userInteractive)
     // Only touched on the main queue.
-    weak var delegate: PeerServerDelegate?
-    private(set) var identity: DeviceIdentity
-    let trust: TrustStore
+    public weak var delegate: PeerServerDelegate?
+    public private(set) var identity: DeviceIdentity
+    public let trust: TrustStore
+    private let usbPort: UInt16
     private var usbListener: NWListener?
     private var wifiListener: NWListener?
     /// Every open connection (strong refs: NWConnection handlers only hold
@@ -98,19 +99,20 @@ final class PeerServer {
     private var current: PeerConnection?
     private var wifiPairingUntil: Date?
     private var wifiEnabled = true
-    var surface = SurfaceInfo(widthPt: 1180, heightPt: 820, scale: 2, pointsPerInch: 132)
-    var capabilities: UInt32 = Caps.gestures | Caps.haptics | Caps.hover | Caps.roll | Caps.predicted
+    public var surface = SurfaceInfo(widthPt: 1180, heightPt: 820, scale: 2, pointsPerInch: 132)
+    public var capabilities: UInt32 = Caps.gestures | Caps.haptics | Caps.hover | Caps.roll | Caps.predicted
 
-    init(identity: DeviceIdentity, trust: TrustStore) {
+    public init(identity: DeviceIdentity, trust: TrustStore, usbPort: UInt16 = SidecarProtocol.defaultPort) {
         self.identity = identity
         self.trust = trust
+        self.usbPort = usbPort
     }
 
     // MARK: lifecycle (call from main)
 
     /// Idempotent: (re)creates only listeners that are missing or dead, so
     /// calling it at launch and on every foregrounding is safe.
-    func start(wifi: Bool) {
+    public func start(wifi: Bool) {
         queue.async {
             self.wifiEnabled = wifi
             if !Self.alive(self.usbListener) {
@@ -133,7 +135,7 @@ final class PeerServer {
         }
     }
 
-    func stop() {
+    public func stop() {
         queue.async {
             self.usbListener?.cancel()
             self.wifiListener?.cancel()
@@ -145,7 +147,7 @@ final class PeerServer {
         }
     }
 
-    func setWifi(enabled: Bool) {
+    public func setWifi(enabled: Bool) {
         queue.async {
             self.wifiEnabled = enabled
             self.wifiListener?.cancel()
@@ -156,11 +158,11 @@ final class PeerServer {
     }
 
     /// Lets unknown PCs reach the pairing step over Wi-Fi for two minutes.
-    func openWifiPairingWindow() {
+    public func openWifiPairingWindow() {
         queue.async { self.wifiPairingUntil = Date().addingTimeInterval(120) }
     }
 
-    func replaceIdentity(_ id: DeviceIdentity) {
+    public func replaceIdentity(_ id: DeviceIdentity) {
         queue.async {
             self.identity = id
             for c in self.connections { c.close(code: .normal, reason: "identity reset") }
@@ -172,7 +174,7 @@ final class PeerServer {
         }
     }
 
-    func updateSurface(_ s: SurfaceInfo) {
+    public func updateSurface(_ s: SurfaceInfo) {
         queue.async {
             guard s != self.surface else { return }
             self.surface = s
@@ -182,11 +184,11 @@ final class PeerServer {
 
     // MARK: sending (any thread)
 
-    func send(_ m: Message) {
+    public func send(_ m: Message) {
         queue.async { self.current?.sendIfActive(m) }
     }
 
-    var hasActiveSession: Bool {
+    public var hasActiveSession: Bool {
         queue.sync { current?.isActive ?? false }
     }
 
@@ -201,7 +203,7 @@ final class PeerServer {
     private func startUSBListener() {
         let params = makeTLSParameters(identity: identity.identity, queue: queue) { _ in true }
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback),
-                                                           port: NWEndpoint.Port(rawValue: SidecarProtocol.defaultPort)!)
+                                                           port: NWEndpoint.Port(rawValue: usbPort)!)
         do {
             let l = try NWListener(using: params)
             l.newConnectionHandler = { [weak self] c in self?.accept(c, viaUSB: true) }

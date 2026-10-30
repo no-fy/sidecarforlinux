@@ -27,6 +27,16 @@ jobs:
       - name: Swift protocol tests (macOS)
         run: cd protocol/swift && swift test
 
+  # The iPad app's networking layer (TLS identity in the keychain, client
+  # certificates, pairing state machine) against Apple's real TLS stack, with
+  # a Swift client playing the daemon. Runs on macOS: same frameworks as iOS.
+  app-net-tests:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: SidecarNet tests (macOS)
+        run: cd ios-app && swift test
+
   ipa:
     name: Unsigned .ipa (xtool)
     runs-on: macos-26

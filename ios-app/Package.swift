@@ -31,15 +31,30 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.1.0"),
     ],
     targets: [
+        // The app (UIKit). Its sources are wrapped in `#if canImport(UIKit)`
+        // so `swift test` can build the package on macOS.
         .target(
             name: "SidecarPad",
+            dependencies: [
+                "SidecarNet",
+                .product(name: "SidecarProtocol", package: "swift"),
+            ],
+            linkerSettings: sdkVersionLinkerFlags
+        ),
+        // Networking, TLS identity, pairing state machine: no UIKit, so it
+        // is tested on macOS in CI against Apple's real TLS stack.
+        .target(
+            name: "SidecarNet",
             dependencies: [
                 .product(name: "SidecarProtocol", package: "swift"),
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
-            ],
-            linkerSettings: sdkVersionLinkerFlags
+            ]
+        ),
+        .testTarget(
+            name: "SidecarNetTests",
+            dependencies: ["SidecarNet", .product(name: "SidecarProtocol", package: "swift")]
         ),
     ],
     swiftLanguageModes: [.v5]

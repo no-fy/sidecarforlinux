@@ -1,4 +1,6 @@
+#if canImport(UIKit)
 import SidecarProtocol
+import SidecarNet
 import UIKit
 
 @MainActor
@@ -324,3 +326,4 @@ final class InkLayer: CAShapeLayer {
         CATransaction.commit()
     }
 }
+#endif

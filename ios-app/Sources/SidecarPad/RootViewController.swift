@@ -1,4 +1,6 @@
+#if canImport(UIKit)
 import SidecarProtocol
+import SidecarNet
 import UIKit
 
 /// Glue between the pencil surface, the network server and the UI.
@@ -297,3 +299,4 @@ final class RootViewController: UIViewController {
         ])
     }
 }
+#endif

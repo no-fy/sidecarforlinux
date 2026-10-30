@@ -8,43 +8,56 @@ import X509
 /// The iPad's long-lived TLS identity: a P-256 key and a self-signed
 /// certificate, created on first launch and kept in the app's keychain.
 /// Nothing here needs an entitlement a free Apple ID lacks.
-struct DeviceIdentity {
-    let identity: SecIdentity
-    let certificateDER: [UInt8]
+public struct DeviceIdentity {
+    public let identity: SecIdentity
+    public let certificateDER: [UInt8]
 
-    var fingerprint: [UInt8] { Pairing.fingerprint(certificateDER: certificateDER) }
+    public var fingerprint: [UInt8] { Pairing.fingerprint(certificateDER: certificateDER) }
 
-    private static let keyTag = Data("io.github.nofy.sidecarforlinux.identity.key".utf8)
-    private static let certLabel = "sidecarforlinux identity"
-    private static let derDefaultsKey = "identity.certificateDER"
+    /// Keychain/UserDefaults namespace; tests use their own.
+    public struct Namespace: Sendable {
+        public var keyTag: Data
+        public var certLabel: String
+        public var derDefaultsKey: String
+        public var commonName: String
 
-    enum IdentityError: Error {
+        public init(_ suffix: String, commonName: String) {
+            keyTag = Data("io.github.nofy.sidecarforlinux.\(suffix).key".utf8)
+            certLabel = "sidecarforlinux \(suffix)"
+            derDefaultsKey = "\(suffix).certificateDER"
+            self.commonName = commonName
+        }
+
+        public static let app = Namespace("identity", commonName: "Sidecar iPad")
+    }
+
+    public enum IdentityError: Error {
         case keychain(OSStatus, String)
         case notFound
     }
 
     /// Loads the identity, creating it on first use.
-    static func loadOrCreate() throws -> DeviceIdentity {
-        if let der = UserDefaults.standard.data(forKey: derDefaultsKey), let id = try? find(der: [UInt8](der)) {
+    public static func loadOrCreate(_ ns: Namespace = .app) throws -> DeviceIdentity {
+        if let der = UserDefaults.standard.data(forKey: ns.derDefaultsKey), let id = try? find(der: [UInt8](der)) {
             return DeviceIdentity(identity: id, certificateDER: [UInt8](der))
         }
-        try deleteAll()
-        return try create()
+        try deleteAll(ns)
+        return try create(ns)
     }
 
     /// Throws away the identity (every paired PC must pair again).
-    static func reset() throws -> DeviceIdentity {
-        try deleteAll()
-        return try create()
+    public static func reset(_ ns: Namespace = .app) throws -> DeviceIdentity {
+        try deleteAll(ns)
+        return try create(ns)
     }
 
-    private static func deleteAll() throws {
-        SecItemDelete([kSecClass: kSecClassKey, kSecAttrApplicationTag: keyTag] as CFDictionary)
-        SecItemDelete([kSecClass: kSecClassCertificate, kSecAttrLabel: certLabel] as CFDictionary)
-        UserDefaults.standard.removeObject(forKey: derDefaultsKey)
+    public static func deleteAll(_ ns: Namespace) throws {
+        SecItemDelete([kSecClass: kSecClassKey, kSecAttrApplicationTag: ns.keyTag] as CFDictionary)
+        SecItemDelete([kSecClass: kSecClassCertificate, kSecAttrLabel: ns.certLabel] as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: ns.derDefaultsKey)
     }
 
-    private static func create() throws -> DeviceIdentity {
+    private static func create(_ ns: Namespace) throws -> DeviceIdentity {
         // 1. Key: generated in software so swift-certificates can sign with it,
         //    then stored in the keychain.
         let key = P256.Signing.PrivateKey()
@@ -60,7 +73,7 @@ struct DeviceIdentity {
         var status = SecItemAdd([
             kSecClass: kSecClassKey,
             kSecValueRef: secKey,
-            kSecAttrApplicationTag: keyTag,
+            kSecAttrApplicationTag: ns.keyTag,
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ] as CFDictionary, nil)
         guard status == errSecSuccess || status == errSecDuplicateItem else {
@@ -70,7 +83,7 @@ struct DeviceIdentity {
         // 2. Self-signed X.509 v3 certificate (digitalSignature is mandatory
         //    on iOS 18.4+, see docs/protocol.md § Security).
         let name = try DistinguishedName {
-            CommonName("Sidecar iPad")
+            CommonName(ns.commonName)
             OrganizationName("sidecarforlinux")
         }
         let now = Date()
@@ -101,12 +114,12 @@ struct DeviceIdentity {
         status = SecItemAdd([
             kSecClass: kSecClassCertificate,
             kSecValueRef: secCert,
-            kSecAttrLabel: certLabel,
+            kSecAttrLabel: ns.certLabel,
         ] as CFDictionary, nil)
         guard status == errSecSuccess || status == errSecDuplicateItem else {
             throw IdentityError.keychain(status, "add certificate")
         }
-        UserDefaults.standard.set(Data(der), forKey: derDefaultsKey)
+        UserDefaults.standard.set(Data(der), forKey: ns.derDefaultsKey)
 
         // 3. The keychain pairs key + certificate into a SecIdentity.
         return DeviceIdentity(identity: try find(der: der), certificateDER: der)
@@ -132,32 +145,33 @@ struct DeviceIdentity {
 }
 
 /// PCs this iPad has paired with (pinned SHA-256 certificate fingerprints).
-final class TrustStore {
-    struct Entry: Codable, Equatable {
-        var name: String
-        var fingerprint: String
-        var pairedAt: Date
+public final class TrustStore: @unchecked Sendable {
+    public struct Entry: Codable, Equatable, Sendable {
+        public var name: String
+        public var fingerprint: String
+        public var pairedAt: Date
     }
 
-    private let key = "trustedDaemons"
+    private let key: String
     private let lock = NSLock()
-    private(set) var entries: [Entry] = []
+    public private(set) var entries: [Entry] = []
 
-    init() {
+    public init(defaultsKey: String = "trustedDaemons") {
+        key = defaultsKey
         if let data = UserDefaults.standard.data(forKey: key),
            let list = try? JSONDecoder().decode([Entry].self, from: data) {
             entries = list
         }
     }
 
-    func contains(_ fp: [UInt8]) -> Bool {
+    public func contains(_ fp: [UInt8]) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         let hex = Pairing.hex(fp)
         return entries.contains { $0.fingerprint == hex }
     }
 
-    func add(_ fp: [UInt8], name: String) {
+    public func add(_ fp: [UInt8], name: String) {
         lock.lock()
         let hex = Pairing.hex(fp)
         entries.removeAll { $0.fingerprint == hex }
@@ -166,7 +180,7 @@ final class TrustStore {
         lock.unlock()
     }
 
-    func removeAll() {
+    public func removeAll() {
         lock.lock()
         entries.removeAll()
         save()
