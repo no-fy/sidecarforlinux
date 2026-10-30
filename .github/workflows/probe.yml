@@ -1,0 +1,20 @@
+name: probe-runners
+# Manual probe of runner capabilities (uinput on Linux, Xcode/Swift on macOS).
+on:
+  workflow_dispatch:
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - run: uname -a; cat /etc/os-release | head -3
+      - run: ls -la /dev/uinput || true; lsmod | grep uinput || true
+      - run: sudo modprobe uinput && ls -la /dev/uinput
+      - run: sudo apt-get install -y -qq evtest libinput-tools >/dev/null && libinput --version
+      - run: swift --version || true
+  macos:
+    runs-on: macos-latest
+    steps:
+      - run: sw_vers; xcodebuild -version; swift --version
+      - run: ls /Applications | grep -i xcode
+      - run: xcrun --sdk iphoneos --show-sdk-version
+      - run: brew info xtool 2>&1 | head -5 || true

@@ -1,0 +1,13 @@
+/target/
+**/target/
+.build/
+**/.build/
+*.ipa
+*.app/
+xtool/
+.swiftpm/
+*.xcodeproj/
+DerivedData/
+/out/
+*.log
+.DS_Store

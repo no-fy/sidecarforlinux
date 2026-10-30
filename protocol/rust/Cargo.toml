@@ -1,0 +1,16 @@
+[package]
+name = "sidecar-protocol"
+description = "Wire protocol for sidecarforlinux (iPad pen tablet + display)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+hex = "0.4"

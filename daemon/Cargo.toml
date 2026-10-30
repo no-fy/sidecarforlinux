@@ -1,0 +1,11 @@
+[package]
+name = "sidecard"
+description = "Linux daemon for sidecarforlinux: iPad + Apple Pencil Pro as pen tablet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sidecar-protocol = { path = "../protocol/rust" }
