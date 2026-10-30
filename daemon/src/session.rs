@@ -50,6 +50,8 @@ pub struct SessionCtx {
     pub on_active: Option<tokio::sync::watch::Sender<Option<ActiveInfo>>>,
     /// Latest iPad−daemon clock offset (ns), for the video channel's latency stats.
     pub clock_offset_tx: Option<tokio::sync::watch::Sender<Option<i64>>>,
+    /// Pen input → encoded frame measurement, shared with the video channel.
+    pub input_probe: Option<std::sync::Arc<crate::clock::InputProbe>>,
     /// Filled during the session.
     pub stats: SessionStats,
 }
@@ -395,6 +397,9 @@ where
                             }
                             let t_inj = now_ns();
                             ctx.stats.samples += 1;
+                            if let Some(p) = &ctx.input_probe {
+                                p.on_input(t_inj);
+                            }
                             if !s.has(sample_flags::PREDICTED) {
                                 if let Some(l) = live.clock.to_local(s.timestamp_ns) {
                                     ctx.stats.input_latency.push_ns(t_inj as i64 - l);

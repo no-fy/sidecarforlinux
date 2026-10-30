@@ -153,6 +153,7 @@ async fn usb_path_via_fake_usbmuxd_pairs_and_streams() {
         recorder: None,
         on_active: None,
         clock_offset_tx: None,
+        input_probe: None,
         stats: SessionStats::default(),
     };
     let c = transport::connect_usb_at(&sock, Some(UDID), DEFAULT_PORT)

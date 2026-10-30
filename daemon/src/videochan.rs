@@ -286,6 +286,7 @@ async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
 
 /// Open the video channel on an already-connected transport and stream
 /// `source` until the iPad closes it or the source ends.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_video(
     conn: Connected,
     identity: &Identity,
@@ -294,6 +295,7 @@ pub async fn run_video(
     name: &str,
     source: VideoSource,
     clock_offset: Option<tokio::sync::watch::Receiver<Option<i64>>>,
+    input_probe: Option<std::sync::Arc<crate::clock::InputProbe>>,
 ) -> Result<VideoStats> {
     let (tls, fp) = transport::tls_connect(conn, identity).await?;
     if fp != expect_fp {
@@ -330,6 +332,7 @@ pub async fn run_video(
     // frame_id -> daemon time the frame left the encoder
     let mut sent_at: std::collections::VecDeque<(u32, u64)> = std::collections::VecDeque::new();
     let mut lat = crate::clock::LatencyStats::new(10_000);
+    let mut input_lat = crate::clock::LatencyStats::new(1_000);
     let mut last_log = tokio::time::Instant::now();
     let result = loop {
         tokio::select! {
@@ -346,6 +349,9 @@ pub async fn run_video(
                     stats.keyframes_sent += f.keyframe as u64;
                     stats.bytes_sent += f.data.len() as u64;
                     sent_at.push_back((f.frame_id, f.capture_ns));
+                    if let Some(d) = input_probe.as_ref().and_then(|p| p.on_frame(f.capture_ns)) {
+                        input_lat.push_ns(d as i64);
+                    }
                     if sent_at.len() > 600 {
                         sent_at.pop_front();
                     }
@@ -369,6 +375,13 @@ pub async fn run_video(
                                 "video latency (encoder out -> iPad received) p50 {:.1} ms p95 {:.1} ms over {} frames",
                                 r.p50_us as f64 / 1000.0, r.p95_us as f64 / 1000.0, r.samples
                             );
+                            let r = input_lat.report(None);
+                            if r.samples > 0 {
+                                tracing::info!(
+                                    "video latency (pen input -> frame encoded, after a pause) p50 {:.1} ms p95 {:.1} ms over {} pauses",
+                                    r.p50_us as f64 / 1000.0, r.p95_us as f64 / 1000.0, r.samples
+                                );
+                            }
                         }
                     }
                     if fb.request_keyframe {

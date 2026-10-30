@@ -44,6 +44,7 @@ fn ctx(id: Identity, trust: TrustStore, pairing: PairingMode, sink: Shared) -> S
         recorder: None,
         on_active: None,
         clock_offset_tx: None,
+        input_probe: None,
         stats: SessionStats::default(),
     }
 }
@@ -323,6 +324,7 @@ async fn video_channel_streams_frames_next_to_the_pen_session() {
             "test-pc",
             src,
             Some(clock_rx),
+            None,
         )
         .await
     };

@@ -220,3 +220,74 @@ mod tests {
         assert!(l.histogram().contains(">=30 ms"));
     }
 }
+
+/// Measures pen input → first encoded frame after an idle screen: the PC's
+/// share of the second-screen lag (compositor redraw, screen capture,
+/// encoder), which the encoder-out → iPad metric doesn't see.
+///
+/// KWin only sends frames when the virtual monitor changes. So the first
+/// frame after a quiet spell answers the first input of the burst: moving the
+/// pen after a pause moves the cursor, and that redraw is the next frame. The
+/// 1 s capture keep-alive can occasionally pair up by chance; medians absorb it.
+#[derive(Debug, Default)]
+pub struct InputProbe {
+    last_frame_ns: std::sync::atomic::AtomicU64,
+    marker_ns: std::sync::atomic::AtomicU64,
+}
+
+impl InputProbe {
+    /// No frame for this long = the screen was idle.
+    const IDLE_NS: u64 = 150_000_000;
+    /// A frame later than this answers something else.
+    const MAX_NS: u64 = 500_000_000;
+
+    /// A pen sample was written to uinput at `t` (daemon clock).
+    pub fn on_input(&self, t: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.marker_ns.load(Relaxed) != 0 {
+            return;
+        }
+        if t.saturating_sub(self.last_frame_ns.load(Relaxed)) >= Self::IDLE_NS {
+            self.marker_ns.store(t, Relaxed);
+        }
+    }
+
+    /// A frame left the encoder at `t`; returns input → frame if it answers a
+    /// marked input.
+    pub fn on_frame(&self, t: u64) -> Option<u64> {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.last_frame_ns.store(t, Relaxed);
+        let m = self.marker_ns.swap(0, Relaxed);
+        if m == 0 || t < m {
+            return None;
+        }
+        Some(t - m).filter(|d| *d <= Self::MAX_NS)
+    }
+}
+
+#[cfg(test)]
+mod input_probe_tests {
+    use super::InputProbe;
+    const MS: u64 = 1_000_000;
+
+    #[test]
+    fn first_frame_after_idle_answers_the_first_input() {
+        let p = InputProbe::default();
+        assert_eq!(p.on_frame(1000 * MS), None);
+        // Idle 300 ms, then a burst of input; the next frame comes 40 ms later.
+        p.on_input(1300 * MS);
+        p.on_input(1304 * MS);
+        assert_eq!(p.on_frame(1340 * MS), Some(40 * MS));
+        // Frames keep coming while moving: input right after a frame isn't marked.
+        p.on_input(1345 * MS);
+        assert_eq!(p.on_frame(1357 * MS), None);
+    }
+
+    #[test]
+    fn stale_markers_are_dropped() {
+        let p = InputProbe::default();
+        p.on_input(1000 * MS);
+        assert_eq!(p.on_frame(1800 * MS), None);
+        assert_eq!(p.on_frame(1816 * MS), None);
+    }
+}

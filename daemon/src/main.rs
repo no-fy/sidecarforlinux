@@ -324,6 +324,7 @@ fn session_ctx(env: &Env, pairing: PairingMode, dry_run: bool) -> Result<Session
         recorder: None,
         on_active: None,
         clock_offset_tx: None,
+        input_probe: None,
         stats: SessionStats::default(),
     })
 }
@@ -377,6 +378,7 @@ async fn run_video_plan(
     name: String,
     plan: VideoPlan,
     clock_rx: tokio::sync::watch::Receiver<Option<i64>>,
+    input_probe: std::sync::Arc<sidecard::clock::InputProbe>,
 ) -> Result<videochan::VideoStats> {
     use videochan::VideoSource;
     let w = (info.surface.width_pt * info.surface.scale)
@@ -463,6 +465,7 @@ async fn run_video_plan(
             &name,
             source,
             Some(clock_rx),
+            Some(input_probe),
         )
         .await
     };
@@ -504,6 +507,8 @@ async fn one_session(
     ctx.on_active = Some(tx);
     let (clock_tx, clock_rx) = tokio::sync::watch::channel(None);
     ctx.clock_offset_tx = Some(clock_tx);
+    let input_probe = std::sync::Arc::new(sidecard::clock::InputProbe::default());
+    ctx.input_probe = Some(input_probe.clone());
     let (port, identity, name) = (
         env.cfg.connection.port,
         ctx.identity.clone(),
@@ -513,13 +518,14 @@ async fn one_session(
     // below whenever it ends while the pen session is still up (encoder
     // exit, KWin closing the stream when display settings change, ...).
     let start_video = |delay: Duration| {
-        let (mut rx, clock_rx, t2, identity, name, plan) = (
+        let (mut rx, clock_rx, t2, identity, name, plan, probe) = (
             rx.clone(),
             clock_rx.clone(),
             t.clone(),
             identity.clone(),
             name.clone(),
             video.clone(),
+            input_probe.clone(),
         );
         Box::pin(async move {
             tokio::time::sleep(delay).await;
@@ -527,7 +533,10 @@ async fn one_session(
                 .await
                 .map_err(|_| anyhow::anyhow!("pen session ended"))?;
             let info = rx.borrow().clone().expect("checked");
-            run_video_plan(t2, port, identity, info, session_id, name, plan, clock_rx).await
+            run_video_plan(
+                t2, port, identity, info, session_id, name, plan, clock_rx, probe,
+            )
+            .await
         })
     };
     let end = {
@@ -571,6 +580,7 @@ async fn one_session(
     };
     ctx.on_active = None;
     ctx.clock_offset_tx = None;
+    ctx.input_probe = None;
     end
 }
 
