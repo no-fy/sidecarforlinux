@@ -24,7 +24,10 @@ let package = Package(
     dependencies: [
         .package(path: "../protocol/swift"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.21.0"),
-        .package(url: "https://github.com/apple/swift-crypto.git", "3.12.3"..<"6.0.0"),
+        // swift-crypto 4.x/5.x add a Linux-only CXKCPShims target with a resource
+        // bundle; xtool 1.24.0's packer expects that bundle on iOS too and fails
+        // ("swift-crypto_CXKCPShims.bundle couldn't be opened"). 3.x avoids it.
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.12.3"..<"4.0.0"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.1.0"),
     ],
     targets: [

@@ -10,7 +10,7 @@ let package = Package(
         .library(name: "SidecarProtocol", targets: ["SidecarProtocol"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"6.0.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.12.3"..<"4.0.0"),
     ],
     targets: [
         .target(
