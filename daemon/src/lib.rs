@@ -21,3 +21,4 @@ pub mod tablet;
 pub mod tls;
 pub mod transport;
 pub mod usbmux;
+pub mod video;
