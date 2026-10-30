@@ -140,6 +140,7 @@ Don't install the app into **LiveContainer**: it blocks the app's Bonjour servic
 
 ```bash
 # iPad: open "Sidecar", keep it in the foreground, USB plugged in, unlocked.
+systemctl --user stop sidecard 2>/dev/null   # only one sidecard may talk to the iPad
 sidecard pair          # shows a 6-digit code; the iPad shows one too
 ```
 
@@ -150,9 +151,10 @@ If it fails, send back the output of `sidecard -v pair` and a screenshot of the 
 ## 7. Test with the real pencil in Krita (10 min) → **paste back**
 
 ```bash
+systemctl --user stop sidecard 2>/dev/null
 sidecard run --record ~/pencil-$(date +%F).jsonl     # Ctrl-C to stop
 # in another terminal, while drawing/hovering:
-evtest  # pick "Sidecar Apple Pencil"; Ctrl-C after a few strokes
+sudo evtest  # pick "Sidecar Apple Pencil"; Ctrl-C after a few strokes (sudo only to read input devices)
 ```
 
 Check each signal and note ✅/❌:
