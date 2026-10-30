@@ -48,7 +48,16 @@ pub struct Connected {
 }
 
 pub async fn connect_usb(udid: Option<&str>, port: u16) -> Result<Connected> {
-    let path = usbmux::socket_path();
+    connect_usb_at(&usbmux::socket_path(), udid, port).await
+}
+
+/// Like `connect_usb` with an explicit usbmuxd socket path (tests).
+pub async fn connect_usb_at(
+    path: &std::path::Path,
+    udid: Option<&str>,
+    port: u16,
+) -> Result<Connected> {
+    let path = path.to_path_buf();
     let devices = usbmux::list_devices(&path).await?;
     let dev = usbmux::choose(&devices, udid).ok_or_else(|| {
         if devices.is_empty() {
@@ -60,7 +69,14 @@ pub async fn connect_usb(udid: Option<&str>, port: u16) -> Result<Connected> {
             )
         }
     })?;
-    let s = usbmux::connect(&path, dev.device_id, port).await?;
+    // usbmuxd answers once the device accepted or refused; bound the wait in
+    // case the app is suspended in the background.
+    let s = tokio::time::timeout(
+        Duration::from_secs(5),
+        usbmux::connect(&path, dev.device_id, port),
+    )
+    .await
+    .map_err(|_| anyhow!("usbmuxd did not answer within 5 s (is the app in the foreground?)"))??;
     Ok(Connected {
         stream: Box::new(s),
         description: format!("USB {} (usbmux device {})", dev.udid, dev.device_id),

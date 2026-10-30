@@ -50,7 +50,7 @@ fn request(msg_type: &str, extra: Vec<(&str, plist::Value)>) -> plist::Dictionar
     d
 }
 
-pub(crate) async fn send_plist<W: AsyncWriteExt + Unpin>(
+pub async fn send_plist<W: AsyncWriteExt + Unpin>(
     w: &mut W,
     tag: u32,
     d: &plist::Dictionary,
@@ -67,9 +67,7 @@ pub(crate) async fn send_plist<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
-pub(crate) async fn recv_plist<R: AsyncReadExt + Unpin>(
-    r: &mut R,
-) -> Result<(u32, plist::Dictionary)> {
+pub async fn recv_plist<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<(u32, plist::Dictionary)> {
     let mut hdr = [0u8; 16];
     r.read_exact(&mut hdr)
         .await
