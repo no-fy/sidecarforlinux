@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Sidecar</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <!-- iPad only -->
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>2</integer>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <!-- Scene life cycle: required by the iOS 27 SDK (TN3187). xtool does not
+         expand $(PRODUCT_MODULE_NAME), hence the literal module name. -->
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <false/>
+        <key>UISceneConfigurations</key>
+        <dict>
+            <key>UIWindowSceneSessionRoleApplication</key>
+            <array>
+                <dict>
+                    <key>UISceneConfigurationName</key>
+                    <string>Default Configuration</string>
+                    <key>UISceneDelegateClassName</key>
+                    <string>SidecarPad.SceneDelegate</string>
+                </dict>
+            </array>
+        </dict>
+    </dict>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UIStatusBarHidden</key>
+    <true/>
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <true/>
+    <!-- Wi-Fi fallback: Bonjour advertising via NWListener needs only these
+         two keys (no multicast entitlement, OK for a free Apple ID). -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Sidecar connects to your Linux computer over your local network when the USB cable is not plugged in.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_sidecarlinux._tcp</string>
+    </array>
+</dict>
+</plist>

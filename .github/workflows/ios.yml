@@ -1,0 +1,118 @@
+name: ios
+# Builds the iPad app UNSIGNED with xtool on a GitHub-hosted macOS runner and
+# uploads the .ipa. No Apple ID, certificate or profile is ever used here:
+# signing happens on the user's machine (xtool) or iPad (SideStore).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: SidecarPad   # = `product:` in ios-app/xtool.yml
+  XTOOL_VERSION: "1.24.0"
+  XTOOL_SHA256: a56e98d69dea02a97a17e609f0ae8771c57ffaab23f1d62513fd9ada222026b3
+
+jobs:
+  protocol-tests:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Swift protocol tests (macOS)
+        run: cd protocol/swift && swift test
+
+  ipa:
+    name: Unsigned .ipa (xtool)
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          SDK="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iOS SDK: $SDK"
+          echo "APP_IOS_SDK_VERSION=$SDK" >> "$GITHUB_ENV"   # read by ios-app/Package.swift
+
+      - name: Install xtool (pinned, SHA-256 verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/xtool.app.zip" \
+            "https://github.com/xtool-org/xtool/releases/download/${XTOOL_VERSION}/xtool.app.zip"
+          echo "${XTOOL_SHA256}  $RUNNER_TEMP/xtool.app.zip" | shasum -a 256 -c -
+          ditto -x -k "$RUNNER_TEMP/xtool.app.zip" "$RUNNER_TEMP"
+          # The CLI wrapper; Contents/MacOS/xtool alone starts the GUI and hangs.
+          echo "$RUNNER_TEMP/xtool.app/Contents/Resources/bin" >> "$GITHUB_PATH"
+
+      - name: xtool smoke test
+        run: perl -e 'alarm shift; exec @ARGV' 60 xtool --version < /dev/null
+
+      - name: Stamp build number (CI copy only)
+        working-directory: ios-app
+        run: |
+          plutil -lint Resources/Info.plist
+          plutil -replace CFBundleVersion -string "$GITHUB_RUN_NUMBER" Resources/Info.plist
+
+      - name: Build (no Apple ID, no signing)
+        working-directory: ios-app
+        run: |
+          set -euo pipefail
+          perl -e 'alarm shift; exec @ARGV' 2100 xtool dev build --configuration release --ipa < /dev/null
+          test -f "xtool/$APP_NAME.ipa"
+
+      - name: Inspect and recompress
+        working-directory: ios-app
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ipa"; rm -rf "$work"; mkdir -p "$work" "$GITHUB_WORKSPACE/dist"
+          unzip -q "xtool/$APP_NAME.ipa" -d "$work"
+          app="$work/Payload/$APP_NAME.app"
+          plutil -p "$app/Info.plist"
+          file "$app/$APP_NAME"
+          xcrun vtool -show-build "$app/$APP_NAME" || true
+          codesign -dvv "$app" 2>&1 || echo "(no code signature: expected for an unsigned build)"
+          (cd "$work" && zip -qry -9 "$GITHUB_WORKSPACE/dist/$APP_NAME.ipa" Payload)
+          (cd "$GITHUB_WORKSPACE/dist" && shasum -a 256 "$APP_NAME.ipa" | tee SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP_NAME }}-ipa
+          path: |
+            dist/${{ env.APP_NAME }}.ipa
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  # Stable download URL for SideStore and scripts/resign-ipad.sh, no GitHub
+  # login needed: a rolling "nightly" pre-release updated from main.
+  publish:
+    needs: ipa
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.APP_NAME }}-ipa
+          path: dist
+      - name: Publish nightly pre-release
+        run: |
+          set -euo pipefail
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly --prerelease --target "$GITHUB_SHA" \
+            --title "Nightly ${GITHUB_SHA::7}" \
+            --notes "Unsigned iPad app built from ${GITHUB_SHA}. Install with SideStore or scripts/resign-ipad.sh (xtool). Not tested on a device unless docs/REPORT.md says so." \
+            dist/*

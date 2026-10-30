@@ -11,7 +11,7 @@ jobs:
   daemon:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -44,7 +44,7 @@ jobs:
           sleep 1
           ./target/release/sidecard latency --dry-run --connect 127.0.0.1:47811 --duration 4 --json out/latency-loopback.json | tee out/latency-loopback.txt | grep -v '^Pen:'
           grep -q "paired with" out/pair-run.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: uinput-evidence
@@ -53,6 +53,6 @@ jobs:
   swift-protocol:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Swift protocol package tests (Linux)
         run: swift --version && cd protocol/swift && swift test

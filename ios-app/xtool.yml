@@ -1,0 +1,8 @@
+version: 1
+# xtool registers this as XTL-xxxxxxxx.<bundleID> with a free Apple ID; avoid
+# changing it (free accounts may create only 10 App IDs per 7 days).
+bundleID: io.github.nofy.sidecarforlinux
+product: SidecarPad
+infoPath: Resources/Info.plist
+iconPath: Resources/AppIcon.png
+skipLSP: true
