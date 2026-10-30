@@ -85,7 +85,7 @@ Then:
    sidecard replay /tmp/demo.jsonl --settle 60
    ```
 
-   Meanwhile open **System Settings → Drawing Tablet**. Is **"Sidecar Apple Pencil"** listed? Map it to the screen you want, or put `[kde] output = "eDP-2"` in `~/.config/sidecarforlinux/config.toml` (output names come from `kscreen-doctor -o`). After 60 s it plays the stroke once and exits.
+   Meanwhile open **System Settings → Drawing Tablet**. Is **"Sidecar Apple Pencil"** listed? The yellow note "This device is managed by a user-space driver…" is expected. KWin flags every `/dev/uinput` device as virtual, and the settings page shows that note for them. KWin's input handling ignores the flag. Map it to the screen you want, or put `[kde] output = "eDP-2"` in `~/.config/sidecarforlinux/config.toml` (output names come from `kscreen-doctor -o`). After 60 s it plays the stroke once and exits.
 2. **Krita.** Open Krita, make it full screen with a new canvas and a pressure + tilt brush. Then run:
 
    ```bash
