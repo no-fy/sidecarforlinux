@@ -467,3 +467,89 @@ fn squeeze_hold_mode_and_keys() {
         ]
     );
 }
+
+/// 240 Hz samples (4.1667 ms apart) delivered in batches of 4, like an iPad
+/// with a 60 Hz display.
+fn batch_240(start_ms: f64, phases: [PenPhase; 4]) -> Vec<PenSample> {
+    phases
+        .iter()
+        .enumerate()
+        .map(|(i, &ph)| {
+            let mut x = s(ph, 0.5, 0.5, 0.5);
+            x.timestamp_ns = ((start_ms + (i as f64 + 1.0) * 1000.0 / 240.0) * 1e6) as u64;
+            x
+        })
+        .collect()
+}
+
+fn kept(r: &mut RateLimiter, b: &[PenSample]) -> Vec<usize> {
+    r.select(b)
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| **k)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[test]
+fn rate_limiter_off_keeps_everything() {
+    let mut r = RateLimiter::new(0);
+    let b = batch_240(0.0, [PenPhase::Move; 4]);
+    assert_eq!(kept(&mut r, &b), vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn rate_limiter_keeps_the_newest_sample_per_period() {
+    use PenPhase::*;
+    // 60 Hz: the touch-down, then the last (newest) sample of each 60 Hz batch.
+    let mut r = RateLimiter::new(60);
+    assert_eq!(
+        kept(&mut r, &batch_240(0.0, [Down, Move, Move, Move])),
+        vec![0]
+    );
+    for k in 1..5 {
+        let b = batch_240(k as f64 * 1000.0 / 60.0, [Move; 4]);
+        assert_eq!(kept(&mut r, &b), vec![3], "batch {k}");
+    }
+    // 120 Hz: every other sample, ending on the newest.
+    let mut r = RateLimiter::new(120);
+    kept(&mut r, &batch_240(0.0, [Hover; 4]));
+    for k in 1..5 {
+        let b = batch_240(k as f64 * 1000.0 / 60.0, [Hover; 4]);
+        assert_eq!(kept(&mut r, &b), vec![1, 3], "batch {k}");
+    }
+    // 30 Hz: one sample every other batch.
+    let mut r = RateLimiter::new(30);
+    kept(&mut r, &batch_240(0.0, [Move; 4]));
+    let picks: Vec<Vec<usize>> = (1..5)
+        .map(|k| kept(&mut r, &batch_240(k as f64 * 1000.0 / 60.0, [Move; 4])))
+        .collect();
+    assert_eq!(picks, vec![vec![], vec![3], vec![], vec![3]]);
+}
+
+#[test]
+fn rate_limiter_never_drops_contact_lift_or_proximity_changes() {
+    use PenPhase::*;
+    let mut r = RateLimiter::new(60);
+    kept(&mut r, &batch_240(0.0, [Hover; 4]));
+    // Touch down mid-batch, lift in the next one, then leave proximity.
+    let b = batch_240(1000.0 / 60.0, [Hover, Down, Move, Move]);
+    assert_eq!(kept(&mut r, &b), vec![1]);
+    let b = batch_240(2000.0 / 60.0, [Move, Up, Hover, Out]);
+    assert_eq!(kept(&mut r, &b), vec![1, 3]);
+    // Back in range: the first hover is kept (proximity in).
+    let b = batch_240(3000.0 / 60.0, [Hover; 4]);
+    assert_eq!(kept(&mut r, &b), vec![0]);
+}
+
+#[test]
+fn rate_limiter_leaves_predicted_samples_to_the_mapper() {
+    use PenPhase::*;
+    let mut r = RateLimiter::new(60);
+    kept(&mut r, &batch_240(0.0, [Move; 4]));
+    let mut b = batch_240(1000.0 / 60.0, [Move; 4]);
+    b[3].flags |= sample_flags::PREDICTED;
+    let k = kept(&mut r, &b);
+    assert!(k.contains(&3), "{k:?}");
+    assert!(k.contains(&2), "newest real sample kept: {k:?}");
+}

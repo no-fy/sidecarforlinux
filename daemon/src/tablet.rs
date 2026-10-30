@@ -120,6 +120,9 @@ pub struct MapperConfig {
     /// the range, so a feather-light touch is still seen as contact by
     /// consumers that derive contact from pressure (libinput does).
     pub min_contact_pressure: f64,
+    /// Cap on pen samples per second written to uinput (0 = all, ~240 Hz).
+    /// See `RateLimiter`.
+    pub max_rate_hz: u32,
 }
 
 impl Default for MapperConfig {
@@ -128,7 +131,100 @@ impl Default for MapperConfig {
             area: [0.0, 0.0, 1.0, 1.0],
             use_predicted: false,
             min_contact_pressure: DEFAULT_MIN_CONTACT_PRESSURE,
+            max_rate_hz: 0,
         }
+    }
+}
+
+/// Thins pen samples to at most `max_hz`, keeping the newest position of each
+/// period (no added lag at batch rate) and every phase change (contact, lift,
+/// proximity).
+///
+/// Some apps do expensive work per pointer event and choke on the Pencil's
+/// 240 Hz. AFFiNE's brush tool rebuilds the whole stroke on every move and
+/// ignores coalesced events, so it lost loops and lagged with the Pencil but
+/// not with a trackpad (found on the real machine). Krita copes with 240 Hz.
+#[derive(Debug, Clone)]
+pub struct RateLimiter {
+    period_ns: u64,
+    last_ts: Option<u64>,
+    last_phase: Option<PenPhase>,
+}
+
+impl RateLimiter {
+    /// `max_hz = 0` keeps everything.
+    pub fn new(max_hz: u32) -> Self {
+        RateLimiter {
+            period_ns: if max_hz == 0 {
+                0
+            } else {
+                1_000_000_000 / max_hz as u64
+            },
+            last_ts: None,
+            last_phase: None,
+        }
+    }
+
+    /// Which samples of one time-ordered batch to inject. Predicted samples
+    /// are left to the mapper (it drops them unless `use_predicted`).
+    pub fn select(&mut self, samples: &[PenSample]) -> Vec<bool> {
+        let mut keep: Vec<bool> = samples
+            .iter()
+            .map(|s| self.period_ns == 0 || s.has(sample_flags::PREDICTED))
+            .collect();
+        if self.period_ns == 0 {
+            return keep;
+        }
+        let real: Vec<usize> = (0..samples.len())
+            .filter(|&i| !samples[i].has(sample_flags::PREDICTED))
+            .collect();
+        // 1. Always keep events: touch, lift, cancel, leaving and entering
+        //    proximity. Hover and Move samples that continue the same state
+        //    are candidates for thinning.
+        let mut must = vec![false; samples.len()];
+        let mut phase = self.last_phase;
+        for &i in &real {
+            let p = samples[i].phase;
+            let continuing = matches!(
+                (phase, p),
+                (Some(PenPhase::Down | PenPhase::Move), PenPhase::Move)
+                    | (Some(PenPhase::Hover | PenPhase::Up), PenPhase::Hover)
+            );
+            must[i] = !continuing;
+            phase = Some(p);
+        }
+        // 2. Thin the rest from the newest backwards, so the freshest position
+        //    goes out (no added lag at batch rate) and kept samples are at
+        //    least one period apart, including from the events above and
+        //    from the previous batch.
+        let slack = self.period_ns / 10;
+        let min_gap = self.period_ns - slack;
+        let mut next_kept = u64::MAX;
+        for (k, &i) in real.iter().enumerate().rev() {
+            let ts = samples[i].timestamp_ns;
+            if must[i] {
+                keep[i] = true;
+                next_kept = ts;
+                continue;
+            }
+            let prev_anchor = real[..k]
+                .iter()
+                .rev()
+                .find(|&&j| must[j])
+                .map(|&j| samples[j].timestamp_ns)
+                .or(self.last_ts);
+            let after_prev = prev_anchor.map_or(true, |p| ts.saturating_sub(p) >= min_gap);
+            let before_next = next_kept == u64::MAX || next_kept.saturating_sub(ts) >= min_gap;
+            if after_prev && before_next {
+                keep[i] = true;
+                next_kept = ts;
+            }
+        }
+        if let Some(&i) = real.iter().rev().find(|&&i| keep[i]) {
+            self.last_ts = Some(samples[i].timestamp_ns);
+        }
+        self.last_phase = phase;
+        keep
     }
 }
 

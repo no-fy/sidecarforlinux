@@ -8,7 +8,7 @@ use crate::gestures::{self, GestureConfig};
 use crate::identity::{Identity, TrustStore};
 use crate::recording::Recorder;
 use crate::sink::{DeviceOptions, EventSink};
-use crate::tablet::{MapperConfig, PenMapper, TabletGeometry, Tool};
+use crate::tablet::{MapperConfig, PenMapper, RateLimiter, TabletGeometry, Tool};
 use anyhow::{anyhow, bail, Context, Result};
 use sidecar_protocol::pairing::{self, Fingerprint};
 use sidecar_protocol::*;
@@ -319,6 +319,7 @@ where
     let mut live = Live {
         sink,
         mapper,
+        rate: RateLimiter::new(ctx.mapper_cfg.max_rate_hz),
         geo,
         clock: ClockSync::default(),
         peer_caps: ack.caps,
@@ -346,6 +347,7 @@ where
 struct Live {
     sink: Box<dyn EventSink>,
     mapper: PenMapper,
+    rate: RateLimiter,
     geo: TabletGeometry,
     clock: ClockSync,
     peer_caps: u32,
@@ -381,7 +383,11 @@ where
                         if let Some(l) = live.clock.to_local(b.send_time_ns) {
                             ctx.stats.transport_latency.push_ns(t_rx as i64 - l);
                         }
-                        for s in &b.samples {
+                        let keep = live.rate.select(&b.samples);
+                        for (s, keep) in b.samples.iter().zip(keep) {
+                            if !keep {
+                                continue;
+                            }
                             let frames = live.mapper.sample(s);
                             live.sink.emit_all(DeviceKind::Pen, &frames)?;
                             if frames.is_empty() {

@@ -29,6 +29,9 @@ direct = true
 use_predicted = false
 # Pressure floor while touching (fraction). libinput needs >= 5% to see contact.
 min_contact_pressure = 0.06
+# Cap pen samples per second (0 = all, ~240 Hz). Try 120 or 60 if an app lags
+# or loses parts of strokes with the pencil but not with a mouse (AFFiNE).
+max_rate_hz = 0
 
 [pencil]
 # none | eraser | stylus | stylus2 | stylus3 | keys:CTRL+Z
@@ -111,6 +114,7 @@ pub struct TabletCfg {
     pub direct: bool,
     pub use_predicted: bool,
     pub min_contact_pressure: f64,
+    pub max_rate_hz: u32,
 }
 
 impl Default for TabletCfg {
@@ -120,6 +124,7 @@ impl Default for TabletCfg {
             direct: true,
             use_predicted: false,
             min_contact_pressure: DEFAULT_MIN_CONTACT_PRESSURE,
+            max_rate_hz: 0,
         }
     }
 }
@@ -188,6 +193,9 @@ impl Config {
         if !(0.0..0.5).contains(&self.tablet.min_contact_pressure) {
             bail!("tablet.min_contact_pressure must be in [0, 0.5)");
         }
+        if self.tablet.max_rate_hz != 0 && !(20..=240).contains(&self.tablet.max_rate_hz) {
+            bail!("tablet.max_rate_hz must be 0 (no cap) or between 20 and 240");
+        }
         self.gestures()?;
         let m = self.video.mode.as_str();
         if !(matches!(m, "off" | "virtual" | "test-pattern") || m.starts_with("file:")) {
@@ -204,6 +212,7 @@ impl Config {
             area: self.tablet.area,
             use_predicted: self.tablet.use_predicted,
             min_contact_pressure: self.tablet.min_contact_pressure,
+            max_rate_hz: self.tablet.max_rate_hz,
         }
     }
 

@@ -169,6 +169,7 @@ CI runs:
 | Tablet works but on the wrong screen | System Settings → Drawing Tablet → map to screen, or `[kde] output = "DP-1"` (names from `kscreen-doctor -o`). |
 | Krita draws, but with even width and no eraser (its Tablet Tester says "Mouse …") | Krita is in its default X11 mode and was started before the pen existed. Run `scripts/krita-wayland.sh` once, or restart Krita after the iPad connects. |
 | The line trails behind the pencil when you go fast and keeps drawing after you lift | Usually the Krita brush, not the input. Check Tool Options → Brush Smoothing (Stabilizer/Weighted do exactly this), or try another brush; Krita remembers a separate brush for the tip and the eraser. On the real machine, a different brush fixed it. |
+| An app lags or loses parts of strokes with the pencil but not with a trackpad (AFFiNE) | The app chokes on 240 pen samples per second. Set `[tablet] max_rate_hz = 120` (or `60`) in `~/.config/sidecarforlinux/config.toml` and restart `sidecard`. It keeps the newest position and every touch, lift and proximity change. |
 | Light strokes don't draw | Raise `min_contact_pressure` (default 0.06; libinput's tip threshold is 5 %). |
 | App won't launch after a week | The profile expired: re-sign (above). |
 | Anything else | `sidecard -vv run`, `journalctl --user -u sidecard -f`, and `scripts/doctor.sh`. |
