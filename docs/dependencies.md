@@ -1,6 +1,6 @@
 # Dependency inventory for the Arch + t2linux target
 
-Machine as documented (not verified): Mac Pro 2019, Arch Linux with the t2linux kernel, KDE Plasma 6 on Wayland, an AMD GPU (`amdgpu` + Mesa VA-API), and an iPad Air with Apple Pencil Pro.
+Machine, from `scripts/doctor.sh` on 2026-10-30: **MacBook Pro 16" 2019 (MacBookPro16,1)**, Arch Linux with the t2linux kernel 7.2.11, KDE Plasma 6.8.2 on Wayland, libinput 1.32. GPUs: Intel UHD 630 (`i915`, VA-API through the iHD driver) and Radeon Pro 5300M/5500M (Navi 14, `amdgpu`). iPad Air with Apple Pencil Pro. (Earlier docs said "Mac Pro 2019"; that was a mix-up.)
 
 ## Phase 1 (pen): needed
 
@@ -45,5 +45,5 @@ Machine as documented (not verified): Mac Pro 2019, Arch Linux with the t2linux 
 
 - **No DKMS module is needed for phases 1–2** (uinput is in-tree; the virtual display uses KWin, not evdi or vkms).
 - DKMS appears only in **phase 3** (`v4l2loopback` for the webcam mode). It must be built against **`linux-t2-headers` matching the running `linux-t2` kernel**, and rebuilt on every kernel update (`dkms autoinstall`). `doctor.sh` reports whether the headers are installed.
-- **Assumption:** the T2 chip (apple-bce) only handles the internal keyboard/trackpad/audio paths. The Mac Pro's USB ports are ordinary xHCI and Thunderbolt 3 controllers, so the iPad over USB doesn't involve apple-bce.
-- If an iPad isn't seen on a USB-C/TB3 port, try a USB-A port.
+- **Assumption:** the T2 chip (apple-bce) only handles the internal keyboard/trackpad/audio paths. The MacBook Pro's Thunderbolt 3 ports are ordinary xHCI controllers, so the iPad over USB doesn't involve apple-bce.
+- If an iPad isn't seen on one Thunderbolt port, try a port on the other side (separate controller) or another cable.

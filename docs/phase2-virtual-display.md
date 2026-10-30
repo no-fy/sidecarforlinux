@@ -59,7 +59,12 @@ iPad: CMVideoFormatDescriptionCreateFromH264ParameterSets → CMSampleBuffer (Di
 VideoFeedback (received/decoded/displayed timestamps, keyframe requests on decode errors)
 ```
 
-**Codec on the Mac Pro 2019 GPUs** (Radeon Pro 580X / Vega II / W5x00X / W6x00X; Mesa radeonsi):
+**Your machine** (`doctor.sh`, 2026-10-30) is a MacBook Pro 16" 2019 with two VA-API encoders:
+- Intel UHD 630 (iHD driver): H.264 and HEVC encode, including the low-power `EncSliceLP` entrypoint. `vainfo` picked this one by default, which suggests KWin composites on the Intel GPU. **Assumption:** encoding on the same GPU avoids a cross-GPU copy of every frame, so try Intel first.
+- Radeon Pro 5300M/5500M (Navi 14, Mesa radeonsi): H.264 and HEVC encode.
+- GStreamer's `va` plugin names the first render node's encoder `vah264enc` and the second `varenderD129h264enc`; which one is Intel is not yet known.
+
+**Codec on the Mac Pro 2019 GPUs** (from the original brief, kept for reference; Radeon Pro 580X / Vega II / W5x00X / W6x00X; Mesa radeonsi):
 - H.264 encode works on all of them.
 - HEVC encode works on all of them, but without B-frames, which we don't want anyway.
 - There is no low-power entrypoint and no AV1 encode.
@@ -137,5 +142,5 @@ Status labels as in REPORT.md.
 ## 6. Open questions for the real machine
 
 - Does `zkde_screencast` v4 bind from an unsandboxed Rust client on your Plasma version without a `.desktop` file?
-- Which GPU is in the Mac Pro (from `doctor.sh`), and do KWin's BGRx DMA-BUF modifiers import into VA-API on it?
+- Which render node is the Intel GPU, and do KWin's BGRx DMA-BUF modifiers import into VA-API on it? (`ls -l /dev/dri/by-path`, then `gst-inspect-1.0 va`.)
 - Does KWin remember the virtual output's placement across sessions?

@@ -41,8 +41,8 @@ With `--video`, the daemon logs **encoder output → iPad received** every 10 s,
 | Date | Setup | touch → uinput p50 / p95 / p99 | network p50 / p95 | RTT | Status |
 |---|---|---|---|---|---|
 | 2026-10-30 | CI ubuntu runner, **fake iPad** over TCP+TLS loopback, 240 Hz samples batched at 120 Hz | 5.34 / 9.91 / 10.22 ms | 0.08 / 0.10 ms | 0.09 ms | **tested** (CI artifact `uinput-evidence/latency-loopback.txt`) |
-| — | Mac Pro + iPad Air over **USB** | *to be measured: MORNING.md step 8* | | | not measured |
-| — | Mac Pro + iPad Air over **Wi-Fi** | *to be measured: MORNING.md step 9* | | | not measured |
+| — | MacBook Pro 16" + iPad Air over **USB** | *to be measured: MORNING.md step 8* | | | not measured |
+| — | MacBook Pro 16" + iPad Air over **Wi-Fi** | *to be measured: MORNING.md step 9* | | | not measured |
 
 How to read the loopback row:
 - The network cost of TLS over TCP plus the daemon is about 0.1 ms.

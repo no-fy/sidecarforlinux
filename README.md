@@ -163,7 +163,7 @@ CI runs:
 |---|---|
 | `opening /dev/uinput: Permission denied` | `scripts/setup-system.sh`, then log out and in. Check with `scripts/doctor.sh`. |
 | `usbmuxd Connect ... connection refused` | The Sidecar app must be **open in the foreground** on the iPad. |
-| `no iOS device attached over USB` | Unlock the iPad and tap **Trust**. Try another cable or port (on the Mac Pro, try a USB-A port). Check with `idevice_id -l`. |
+| `no iOS device attached over USB` | Unlock the iPad and tap **Trust**. Try another cable or a port on the other side of the laptop. Check with `idevice_id -l`. |
 | `not paired; run sidecard pair` | Pair once (above). |
 | Tablet works but on the wrong screen | System Settings → Drawing Tablet → map to screen, or `[kde] output = "DP-1"` (names from `kscreen-doctor -o`). |
 | Light strokes don't draw | Raise `min_contact_pressure` (default 0.06; libinput's tip threshold is 5 %). |

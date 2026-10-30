@@ -71,9 +71,19 @@ else
   if [ -e /sys/class/misc/uinput ]; then fail "/dev/uinput missing although the module is loaded"; else fail "uinput not loaded - 'modprobe uinput' (MORNING.md step 2 makes it permanent)"; fi
 fi
 grep -qs '^uinput' /proc/modules && info "uinput loaded as a module" || info "uinput not listed as module (built in, or not loaded)"
-[ -e /etc/udev/rules.d/60-sidecarforlinux-uinput.rules ] && ok "udev rule installed: $(cat /etc/udev/rules.d/60-sidecarforlinux-uinput.rules | grep -v '^#' | head -1)" || warn "sidecarforlinux udev rule not installed"
+if [ -e /etc/udev/rules.d/60-sidecarforlinux-uinput.rules ]; then
+  ok "udev rule installed: $(grep -v '^#' /etc/udev/rules.d/60-sidecarforlinux-uinput.rules | head -1)"
+elif [ -w /dev/uinput ]; then
+  info "sidecarforlinux udev rule not needed: /dev/uinput is already writable"
+else
+  warn "sidecarforlinux udev rule not installed"
+fi
+if have getfacl && [ -e /dev/uinput ]; then
+  acl=$(getfacl -cp /dev/uinput 2>/dev/null | grep -E '^user:[^:]+:' | tr '\n' ' ')
+  [ -n "$acl" ] && info "/dev/uinput ACL: $acl(granted by: $(grep -ls 'uinput' /usr/lib/udev/rules.d/*.rules /etc/udev/rules.d/*.rules 2>/dev/null | tr '\n' ' '))"
+fi
 info "groups of $(id -un): $(id -Gn)"
-if have libinput; then info "libinput $(libinput --version 2>/dev/null)"; else warn "libinput tools missing (pacman -S libinput)"; fi
+if have libinput; then info "libinput $(libinput --version 2>/dev/null)"; else warn "libinput tools missing (pacman -S libinput-tools)"; fi
 have evtest && ok "evtest installed" || warn "evtest missing (pacman -S evtest)"
 if have libinput; then
   if libinput list-devices 2>/dev/null | grep -q "Sidecar Apple Pencil"; then ok "a Sidecar Apple Pencil device is present right now"; else info "no Sidecar Apple Pencil device right now (only exists while sidecard runs)"; fi
@@ -95,6 +105,7 @@ if have gst-inspect-1.0; then
   for e in vah264enc vah264lpenc vah265enc x264enc; do
     gst-inspect-1.0 "$e" >/dev/null 2>&1 && ok "gstreamer element $e" || info "gstreamer element $e not available"
   done
+  info "(phase 2 only: va* elements come from gst-plugin-va, x264enc from gst-plugins-ugly)"
 else
   info "gst-inspect-1.0 not installed (gstreamer, only needed for phase 2)"
 fi
@@ -118,13 +129,19 @@ if have idevice_id; then
         idevicepair -u "$u" validate >/dev/null 2>&1 && ok "  paired with this computer (Trust accepted)" || fail "  not paired: unlock the iPad, tap 'Trust', then: idevicepair pair"
       fi
     done
+  elif ! have usbmuxd; then
+    warn "no iOS device visible over USB (expected: idevice_id needs usbmuxd, which is not installed)"
   else
     warn "no iOS device visible over USB (cable? unlocked? trusted?)"
   fi
 else
   info "libimobiledevice tools not installed (pacman -S libimobiledevice) - optional, for diagnostics"
 fi
-lsusb 2>/dev/null | grep -i 'apple' | sed 's/^/  INFO  usb: /'
+if have lsusb; then
+  lsusb 2>/dev/null | grep -i 'apple' | sed 's/^/  INFO  usb: /'
+else
+  info "lsusb not installed (pacman -S usbutils) - optional, lists Apple USB devices"
+fi
 
 hdr "Network (Wi-Fi fallback)"
 if have avahi-browse; then

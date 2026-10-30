@@ -9,8 +9,8 @@ Labels:
 
 ## What to do first (in this order)
 
-1. `scripts/doctor.sh` on the Mac Pro, and paste me the output. It changes nothing. ([MORNING.md §1](MORNING.md))
-2. `scripts/setup-system.sh`, which shows its plan and asks before using sudo, then log out and back in. Then `scripts/install-daemon.sh`.
+1. `scripts/doctor.sh` on your Linux machine, and paste me the output. It changes nothing. ([MORNING.md §1](MORNING.md))
+2. `scripts/setup-system.sh`, which shows its plan and asks before using sudo (log out and back in only if it added the `uinput` group). Then `scripts/install-daemon.sh`.
 3. **Test the tablet without the iPad:** `sidecard replay <(sidecard gen-demo) --settle 5` with Krita's tablet tester open, and check System Settings → Drawing Tablet. This tells us whether KDE and Krita accept the device before the iPad is involved.
 4. Install the iPad app: [nightly .ipa](https://github.com/no-fy/sidecarforlinux/releases/tag/nightly), using either xtool (`scripts/resign-ipad.sh`) or SideStore. Then `sidecard pair`.
 5. Real-pencil checklist and latency ([MORNING.md §7–8](MORNING.md)). Send back the results and the `--record` file.

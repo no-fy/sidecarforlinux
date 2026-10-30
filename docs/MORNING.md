@@ -24,13 +24,13 @@ scripts/doctor.sh | tee ~/sidecar-doctor.txt
 
 Run it from a terminal inside your Plasma Wayland session, ideally with the iPad plugged in and unlocked.
 
-## 2. One-time system changes (5 min + re-login)
+## 2. One-time system changes (5 min, + re-login only if uinput needs a group)
 
 These are the system changes your machine needs. Nothing was applied remotely.
 
 | Change | Why | Undo |
 |---|---|---|
-| `pacman -S --needed usbmuxd libimobiledevice evtest libinput` | USB transport to the iPad; diagnostics | `pacman -R ...` |
+| `pacman -S --needed usbmuxd libimobiledevice evtest libinput-tools` (+ `rust` if `cargo` is missing) | USB transport to the iPad; diagnostics (on Arch the `libinput` command is in `libinput-tools`); building the daemon | `pacman -R ...` |
 | New system group `uinput` | dedicated permission to create virtual input devices | `groupdel uinput` |
 | `/etc/udev/rules.d/60-sidecarforlinux-uinput.rules`: `KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="uinput", MODE="0660", OPTIONS+="static_node=uinput"` | lets that group open `/dev/uinput` | delete the file |
 | `/etc/modules-load.d/sidecarforlinux.conf` containing `uinput` | load the in-tree `uinput` module at boot (no DKMS involved) | delete the file |
@@ -39,11 +39,13 @@ These are the system changes your machine needs. Nothing was applied remotely.
 
 **Security note:** members of `uinput` can inject input into your session. Only add your own desktop user.
 
-The script below shows exactly these commands and asks before it runs anything:
+**If `doctor.sh` already says `/dev/uinput is writable`**, the group, udev rule and module rows are skipped. Some other package (Steam, game-controller udev rules, ...) already gives your logged-in user access through a udev `uaccess` ACL (the `+` in `crw-rw----+`). In that case only the packages are installed and no re-login is needed. `--with-uinput-group` adds the group anyway, so access survives removing that package.
+
+The script below shows exactly the commands it will run and asks before it runs anything:
 
 ```bash
 scripts/setup-system.sh
-# then log out of Plasma and back in (group membership), and re-check:
+# only if it added the uinput group: log out of Plasma and back in, then re-check:
 scripts/doctor.sh | grep -A8 'uinput (virtual'
 ```
 
@@ -51,12 +53,11 @@ scripts/doctor.sh | grep -A8 'uinput (virtual'
 - Phase 1 needs **no DKMS module**: `uinput` is in the mainline kernel.
 - DKMS (and therefore `linux-t2-headers` matching your running t2 kernel) only matters later for `v4l2loopback` (phase 3 webcam).
 - `evdi` is not used (see DECISIONS D16).
-- **Assumption:** the Mac Pro's USB-C/Thunderbolt 3 ports enumerate an iPad like any xHCI port. If `idevice_id -l` shows nothing on a USB-C port, try a USB-A port with a USB-A→USB-C cable and tell me which port works.
+- **Assumption:** the MacBook Pro's Thunderbolt 3 (USB-C) ports enumerate an iPad like any xHCI port under the t2linux kernel. If `idevice_id -l` shows nothing, try another port (left vs right side are different controllers) or another cable, and tell me which one works.
 
 ## 3. Build and install the daemon (5 min)
 
 ```bash
-sudo pacman -S --needed rust      # if cargo is missing
 scripts/install-daemon.sh         # builds, installs ~/.local/bin/sidecard, asks before adding a user service
 sidecard --version && sidecard info
 ```
@@ -132,7 +133,7 @@ The first time, on the iPad: **Settings → General → VPN & Device Management 
 | Slots (of 3 per free Apple ID) | 1 | 2 (SideStore + the app) |
 | Apple ID password stored | on the PC (xtool token) | on the iPad (SideStore) |
 | Moving parts | xtool AppImage | iloader, SideStore, LocalDevVPN, pairing file |
-| Best for | you sit at the Mac Pro anyway | the iPad leaves the desk for > 7 days |
+| Best for | the iPad is often plugged into the laptop anyway | the iPad leaves the desk for > 7 days |
 
 Don't install the app into **LiveContainer**: it blocks the app's Bonjour service (Wi-Fi fallback).
 
