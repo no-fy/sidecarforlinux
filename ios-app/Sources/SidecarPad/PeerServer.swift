@@ -104,10 +104,28 @@ final class PeerServer {
 
     // MARK: lifecycle (call from main)
 
+    /// Idempotent: (re)creates only listeners that are missing or dead, so
+    /// calling it at launch and on every foregrounding is safe.
     func start(wifi: Bool) {
         queue.async {
             self.wifiEnabled = wifi
-            self.startListeners()
+            if !Self.alive(self.usbListener) {
+                self.usbListener?.cancel()
+                self.startUSBListener()
+            }
+            if wifi && !Self.alive(self.wifiListener) {
+                self.wifiListener?.cancel()
+                self.startWifiListener()
+            }
+            self.reportWaitingIfIdle()
+        }
+    }
+
+    private static func alive(_ l: NWListener?) -> Bool {
+        guard let l else { return false }
+        switch l.state {
+        case .failed, .cancelled: return false
+        default: return true
         }
     }
 
@@ -215,7 +233,13 @@ final class PeerServer {
     private func listenerState(_ st: NWListener.State, name: String) {
         switch st {
         case .failed(let e):
-            report(.failed("\(name) listener failed: \(e)"))
+            report(.failed("\(name) listener failed: \(e) (retrying)"))
+            // e.g. the port is still held right after returning from the
+            // background: try again shortly.
+            queue.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self else { return }
+                self.start(wifi: self.wifiEnabled)
+            }
         case .ready:
             reportWaitingIfIdle()
         default:

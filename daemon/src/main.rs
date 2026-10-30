@@ -276,6 +276,7 @@ async fn run_loop(
         pairing::format_fingerprint(&ctx.identity.fingerprint())
     );
     let mut backoff = Duration::from_millis(500);
+    let mut last_err: Option<String> = None;
     loop {
         let res = tokio::select! {
             r = one_session(&env, &t, &mut ctx) => r,
@@ -286,6 +287,7 @@ async fn run_loop(
         };
         match res {
             Ok(end) => {
+                last_err = None;
                 tracing::info!("session ended: {end:?}");
                 backoff = Duration::from_millis(500);
                 if matches!(
@@ -296,7 +298,15 @@ async fn run_loop(
                 }
             }
             Err(e) => {
-                tracing::warn!("{e:#}");
+                // Waiting for the iPad repeats the same error every few
+                // seconds; only log it at warn level when it changes.
+                let msg = format!("{e:#}");
+                if last_err.as_deref() == Some(msg.as_str()) {
+                    tracing::debug!("{msg}");
+                } else {
+                    tracing::warn!("{msg}");
+                    last_err = Some(msg);
+                }
                 backoff = (backoff * 2).min(Duration::from_secs(5));
             }
         }
