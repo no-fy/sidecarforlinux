@@ -26,7 +26,7 @@ final class VectorTests: XCTestCase {
         let pairing: PairingV
     }
 
-    static func load() throws -> Vectors {
+    static func loadVectors() throws -> Vectors {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // SidecarProtocolTests
             .deletingLastPathComponent()  // Tests
@@ -84,7 +84,7 @@ final class VectorTests: XCTestCase {
     }
 
     func testEncodeMatchesRustVectors() throws {
-        let v = try Self.load()
+        let v = try Self.loadVectors()
         let msgs = Self.messages()
         XCTAssertEqual(v.messages.count, msgs.count, "Swift and Rust test sets differ")
         for m in v.messages {
@@ -94,7 +94,7 @@ final class VectorTests: XCTestCase {
     }
 
     func testDecodeRustVectors() throws {
-        let v = try Self.load()
+        let v = try Self.loadVectors()
         let msgs = Self.messages()
         for m in v.messages {
             var d = FrameDecoder()
@@ -119,7 +119,7 @@ final class VectorTests: XCTestCase {
     }
 
     func testPairingMatchesRust() throws {
-        let p = try Self.load().pairing
+        let p = try Self.loadVectors().pairing
         let fpD = Pairing.fingerprint(certificateDER: Array(p.daemon_cert_utf8.utf8))
         let fpI = Pairing.fingerprint(certificateDER: Array(p.ipad_cert_utf8.utf8))
         XCTAssertEqual(Pairing.hex(fpD), p.fp_daemon)

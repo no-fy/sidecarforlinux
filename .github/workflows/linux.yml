@@ -33,7 +33,9 @@ jobs:
           BIN=$(ls -t target/debug/deps/uinput-* | grep -v '\.d$' | head -1)
           sudo SIDECAR_UINPUT_TEST=1 "$BIN" --nocapture
       - name: evtest / libinput / udev check with replayed pencil events
-        run: sudo scripts/ci-uinput-check.sh target/release/sidecard out
+        run: |
+          sudo scripts/ci-uinput-check.sh target/release/sidecard out
+          sudo chown -R "$USER" out
       - name: Fake iPad end-to-end via CLI (pairing + replay + latency)
         run: |
           export SIDECAR_CONFIG_DIR=$PWD/out/pc
