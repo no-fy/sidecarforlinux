@@ -127,7 +127,7 @@ sidecard display-probe                # phase 2: create a KWin virtual monitor, 
 sidecard pair                         # pair a new iPad (asks on this terminal)
 sidecard latency --duration 30        # touch -> uinput latency histogram (docs/latency.md)
 sidecard devices                      # iPads over usbmuxd and mDNS
-sidecard replay FILE [--loop]         # inject a recording into a virtual tablet, no iPad needed
+sidecard replay FILE [--loop]         # inject a recording into a virtual tablet, no iPad needed (moves your cursor; --loop stops after 30 s)
 sidecard fake-ipad [--replay FILE]    # pretend to be the iPad app (tests, demos)
 sidecard gen-demo | info | unpair NAME | example-config
 ```

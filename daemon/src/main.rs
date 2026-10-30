@@ -95,9 +95,15 @@ enum Cmd {
         speed: f64,
         #[arg(long)]
         dry_run: bool,
-        /// Repeat forever.
+        /// Repeat the recording, pausing between runs, until --for runs out.
         #[arg(long = "loop")]
         repeat: bool,
+        /// With --loop: seconds between runs (time to grab the mouse back).
+        #[arg(long, default_value_t = 3.0)]
+        pause: f64,
+        /// With --loop: stop after this many seconds (0 = until Ctrl-C).
+        #[arg(long = "for", default_value_t = 30.0)]
+        for_secs: f64,
         /// Wait this many seconds after creating the device (time to start
         /// evtest / libinput debug-events / Krita).
         #[arg(long, default_value_t = 1.0)]
@@ -651,12 +657,20 @@ async fn devices() -> Result<()> {
     Ok(())
 }
 
+/// How `replay` repeats: once, or in a loop with pauses and a time limit.
+#[derive(Debug, Clone, Copy)]
+struct Repeat {
+    enabled: bool,
+    pause: f64,
+    for_secs: f64,
+}
+
 async fn replay(
     env: Env,
     file: PathBuf,
     speed: f64,
     dry_run: bool,
-    repeat: bool,
+    repeat: Repeat,
     settle: f64,
 ) -> Result<()> {
     let events = recording::read(&file)?;
@@ -692,32 +706,91 @@ async fn replay(
         println!("virtual device: {}", n.display());
     }
     let gcfg = env.cfg.gestures()?;
-    tokio::time::sleep(Duration::from_secs_f64(settle)).await;
-    loop {
-        let mut mapper = PenMapper::new(geo, env.cfg.mapper());
-        let start = tokio::time::Instant::now();
-        for (i, e) in events.iter().enumerate() {
-            if speed > 0.0 {
-                tokio::time::sleep_until(
-                    start + Duration::from_secs_f64(e.t_ms() / 1000.0 / speed),
-                )
-                .await;
-            }
-            if let Some(s) = e.to_sample((e.t_ms() * 1e6) as u64, i as u32)? {
-                sink.emit_all(DeviceKind::Pen, &mapper.sample(&s))?;
-            } else if let Some(g) = e.to_gesture((e.t_ms() * 1e6) as u64)? {
-                let out = gestures::handle(&gcfg, &mut mapper, &g);
-                sink.emit_all(DeviceKind::Pen, &out.pen_frames)?;
-                sink.emit_all(DeviceKind::Keys, &out.key_frames)?;
-                if let Some(t) = out.tool_changed {
-                    println!("tool -> {t:?}");
+    let run_secs = match events.last() {
+        Some(e) if speed > 0.0 => e.t_ms() / 1000.0 / speed,
+        _ => 0.0,
+    };
+    // The pen moves the real cursor and clicks, which can pull keyboard focus
+    // away from this terminal: say how it ends before it starts.
+    if !dry_run {
+        let ends = match (repeat.enabled, repeat.for_secs > 0.0) {
+            (false, _) => format!("It stops by itself after one {run_secs:.1} s run."),
+            (true, true) => format!(
+                "It stops by itself within {:.0} s ({run_secs:.1} s runs, {} s apart).",
+                repeat.for_secs, repeat.pause
+            ),
+            (true, false) => format!(
+                "It repeats until you stop it ({run_secs:.1} s runs, {} s apart).",
+                repeat.pause
+            ),
+        };
+        println!(
+            "The virtual pen will take over the mouse cursor: it hovers, clicks and drags across the\n\
+             middle of the screen and right-clicks once. Put Krita (or an empty window) there.\n\
+             {ends} To stop early: Ctrl-C here, or `pkill -x sidecard` from another terminal.\n\
+             Starting in {settle:.0} s."
+        );
+    }
+    let mut mapper = PenMapper::new(geo, env.cfg.mapper());
+    let play = async {
+        tokio::time::sleep(Duration::from_secs_f64(settle)).await;
+        let first = tokio::time::Instant::now();
+        let mut runs = 0u32;
+        loop {
+            mapper = PenMapper::new(geo, env.cfg.mapper());
+            let start = tokio::time::Instant::now();
+            for (i, e) in events.iter().enumerate() {
+                if speed > 0.0 {
+                    tokio::time::sleep_until(
+                        start + Duration::from_secs_f64(e.t_ms() / 1000.0 / speed),
+                    )
+                    .await;
+                }
+                if let Some(s) = e.to_sample((e.t_ms() * 1e6) as u64, i as u32)? {
+                    sink.emit_all(DeviceKind::Pen, &mapper.sample(&s))?;
+                } else if let Some(g) = e.to_gesture((e.t_ms() * 1e6) as u64)? {
+                    let out = gestures::handle(&gcfg, &mut mapper, &g);
+                    sink.emit_all(DeviceKind::Pen, &out.pen_frames)?;
+                    sink.emit_all(DeviceKind::Keys, &out.key_frames)?;
+                    if let Some(t) = out.tool_changed {
+                        println!("tool -> {t:?}");
+                    }
                 }
             }
+            sink.emit_all(DeviceKind::Pen, &mapper.release_all())?;
+            runs += 1;
+            // Only start another run if it can finish within --for.
+            let elapsed = first.elapsed().as_secs_f64();
+            if !repeat.enabled
+                || (repeat.for_secs > 0.0 && elapsed + repeat.pause + run_secs > repeat.for_secs)
+            {
+                break;
+            }
+            if repeat.for_secs > 0.0 {
+                println!(
+                    "run {runs} done, next in {} s ({:.0} s left)",
+                    repeat.pause,
+                    repeat.for_secs - elapsed
+                );
+            } else {
+                println!("run {runs} done, next in {} s", repeat.pause);
+            }
+            tokio::time::sleep(Duration::from_secs_f64(repeat.pause)).await;
         }
+        anyhow::Ok(runs)
+    };
+    let interrupted = tokio::select! {
+        r = play => {
+            let runs = r?;
+            println!("done ({runs} run{})", if runs == 1 { "" } else { "s" });
+            false
+        }
+        _ = tokio::signal::ctrl_c() => true,
+    };
+    if interrupted {
+        // Lift the pen in case Ctrl-C landed mid-stroke.
         sink.emit_all(DeviceKind::Pen, &mapper.release_all())?;
-        if !repeat {
-            break;
-        }
+        println!("stopped");
     }
     // Give readers (evtest, libinput) time to drain before the device vanishes.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -876,6 +949,8 @@ fn main() -> Result<()> {
                 speed,
                 dry_run,
                 repeat,
+                pause,
+                for_secs,
                 settle,
             } => {
                 replay(
@@ -883,7 +958,11 @@ fn main() -> Result<()> {
                     file.clone(),
                     *speed,
                     *dry_run,
-                    *repeat,
+                    Repeat {
+                        enabled: *repeat,
+                        pause: pause.max(0.0),
+                        for_secs: for_secs.max(0.0),
+                    },
                     *settle,
                 )
                 .await

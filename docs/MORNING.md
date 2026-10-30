@@ -76,11 +76,25 @@ sidecard replay /tmp/demo.jsonl --settle 5
 
 (`sudo` is only for *reading* all input devices in libinput debug-events. It's optional; `scripts/ci-uinput-check.sh` does the same checks.)
 
-Then:
-1. During the replay (or with `sidecard replay /tmp/demo.jsonl --loop --settle 0`), open **System Settings → Drawing Tablet**: is **"Sidecar Apple Pencil"** listed? Map it to the screen you want. (Or put `[kde] output = "DP-1"` in `~/.config/sidecarforlinux/config.toml`; output names come from `kscreen-doctor -o`.)
-2. Open **Krita** with a pressure + tilt brush, start `sidecard replay /tmp/demo.jsonl --loop --settle 3`, and keep the Krita canvas under the middle of the mapped screen. You should see an S-stroke that thickens and thins, and later a short eraser stroke.
+**Heads-up:** while the replay runs, the virtual pen *is* your mouse cursor. It hovers, clicks and drags across the middle of the screen and right-clicks once (the squeeze). A click can take keyboard focus away from the terminal, so Ctrl-C may not reach it. That's why a replay always stops by itself: `--loop` repeats every 3 s for 30 s (`--pause`, `--for`). `pkill -x sidecard` from another terminal also stops it.
 
-   Krita "Settings → Configure Krita → Tablet settings → Tablet tester" shows pressure, tilt and rotation live.
+Then:
+1. **Drawing Tablet settings.** This keeps the device alive for 60 s without moving the cursor:
+
+   ```bash
+   sidecard replay /tmp/demo.jsonl --settle 60
+   ```
+
+   Meanwhile open **System Settings → Drawing Tablet**. Is **"Sidecar Apple Pencil"** listed? Map it to the screen you want, or put `[kde] output = "eDP-2"` in `~/.config/sidecarforlinux/config.toml` (output names come from `kscreen-doctor -o`). After 60 s it plays the stroke once and exits.
+2. **Krita.** Open Krita, make it full screen with a new canvas and a pressure + tilt brush. Then run:
+
+   ```bash
+   sidecard replay /tmp/demo.jsonl --loop --settle 5
+   ```
+
+   Switch to Krita within the 5 s. You should see an S-stroke that thickens and thins, then a short eraser stroke, repeated every few seconds for 30 s.
+
+   Krita "Settings → Configure Krita → Tablet settings → Tablet tester" shows pressure, tilt and rotation live: open it, start the same command, and draw nothing yourself.
 
 Send back: whether the device shows up in Drawing Tablet, a screenshot of the Krita stroke or the tablet tester, and `~/sidecar-libinput.txt`.
 
