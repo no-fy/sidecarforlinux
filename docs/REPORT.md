@@ -15,6 +15,18 @@ Labels:
 4. Install the iPad app: [nightly .ipa](https://github.com/no-fy/sidecarforlinux/releases/tag/nightly), using either xtool (`scripts/resign-ipad.sh`) or SideStore. Then `sidecard pair`.
 5. Real-pencil checklist and latency ([MORNING.md §7–8](MORNING.md)). Send back the results and the `--record` file.
 
+## Tested on your machine (2026-10-30, MacBookPro16,1, KDE 6.8.2, Krita 6.0.4)
+
+Run by you, with screenshots and logs sent back. No iPad involved yet (synthetic demo through `sidecard replay`).
+
+| Item | Result |
+|---|---|
+| `doctor.sh` | Wayland, KWin D-Bus, `zkde_screencast` v6, VA-API H.264/HEVC encode all OK. `/dev/uinput` was already writable (udev ACL). Two script bugs found and fixed: Arch ships the `libinput` command in `libinput-tools`, and the uinput group isn't needed when access already works. |
+| KWin accepts the virtual pen | **Tested.** The cursor follows it. Listed in System Settings → Drawing Tablet, with KDE's generic "user-space driver" note shown for every uinput device. KDE's tester receives tablet (`zwp_tablet_tool_v2`) events. |
+| Krita, default X11 mode | **Tested.** A pen created after Krita started arrives as a mouse (no pressure). Created before Krita started, it arrives as a stylus: pressure 62 % for the demo's 0.6, tilt 24.1°/25.1° for an expected 24.1°/24.7° (1° steps). |
+| Krita, Wayland mode (`scripts/krita-wayland.sh`) | **Tested.** Picks up the pen whenever it appears. The S-stroke goes thin → thick → thin with pressure, and the eraser stroke leaves no black line. |
+| `replay --loop` safety | Fixed after the first run fought the user for the cursor: now 3 s pauses, stops by itself after 30 s, and prints how to stop it. |
+
 ## Done and tested
 
 | Item | Evidence |
