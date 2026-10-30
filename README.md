@@ -14,7 +14,11 @@
 - **Transport**: USB-C through `usbmuxd` first, Wi-Fi with Bonjour as fallback.
 - **Security**: mutual TLS 1.3 everywhere, pinned certificates, and a 6-digit code confirmed on both devices the first time.
 
-> **Status (2026-10-30, first night):** the Linux side is implemented and tested in CI, including real `/dev/uinput`, evtest and libinput. The iPad app builds in CI but **hasn't run on an iPad yet**. See [docs/REPORT.md](docs/REPORT.md) for exactly what is tested, built-but-untested, or assumed.
+> **Status (2026-10-30, first night):**
+> - **Linux side:** implemented and tested in CI, including real `/dev/uinput`, evtest and libinput.
+> - **iPad app:** builds in CI. Its networking core passes tests on macOS against the real Rust daemon over Apple's TLS stack. The app **hasn't run on an iPad yet**.
+>
+> See [docs/REPORT.md](docs/REPORT.md) for exactly what is tested, built-but-untested, or assumed.
 
 ## How it relates to other projects
 
@@ -135,8 +139,16 @@ Configuration lives in `~/.config/sidecarforlinux/config.toml` (`sidecard exampl
 - **iPad app:** `cd ios-app && xtool dev build --ipa` on a Mac, or let CI do it ([`.github/workflows/ios.yml`](.github/workflows/ios.yml)). The VM that wrote this never builds iOS locally.
 
 CI runs:
-- **Linux:** fmt, clippy, unit and end-to-end tests (daemon ↔ fake iPad over TLS), a real `/dev/uinput` test as root, and evtest/libinput/udev checks on replayed pencil events (artifact `uinput-evidence`).
-- **macOS:** Swift protocol tests and the unsigned xtool build.
+- **Linux:**
+  - fmt and clippy
+  - unit tests
+  - end-to-end tests: daemon ↔ fake iPad over TLS, plus a fake usbmuxd for the USB path
+  - a real `/dev/uinput` test as root
+  - evtest/libinput/udev checks on replayed pencil events (artifact `uinput-evidence`)
+- **macOS:**
+  - Swift protocol tests
+  - the iPad networking layer (`SidecarNet`) tested against Apple's TLS stack **and against the real Rust daemon**
+  - the unsigned xtool build
 
 ## Troubleshooting
 

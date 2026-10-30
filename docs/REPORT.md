@@ -27,26 +27,26 @@ Labels:
 | TLS 1.3 mTLS, pinning, pairing with commitment + 6-digit code | `daemon/tests/end_to_end.rs` runs the daemon against the fake iPad over real TCP+TLS:<br>• an unpaired iPad is refused<br>• pairing succeeds<br>• reconnecting needs no pairing<br>• the iPad rejecting the pairing pins nothing<br>• a daemon with the wrong identity is refused<br>Also run through the CLI in CI (`sidecard run --pair` + `fake-ipad`). **Tested** (daemon side). |
 | Clock sync + latency tool | Unit-tested. The end-to-end test checks that the fake iPad's 1000 s clock offset is recovered within 5 ms. `sidecard latency` against the fake iPad on CI loopback gave: network p50 0.08 ms; touch→uinput p50 5.3 ms, which is the simulated 120 Hz coalescing. **Tested** on loopback only ([latency.md](latency.md)). |
 | Gestures → actions, haptic on tool switch | Mapper tests. The end-to-end test checks that a double-tap leads to exactly one Haptic message sent to the iPad. **Tested** (daemon side). |
-| usbmuxd client | Port byte order and device selection are unit-tested. **The real usbmuxd exchange is untested** (no Apple device here). |
+| usbmuxd client | `daemon/tests/usbmux.rs` runs a **fake usbmuxd** (unix socket, real plist protocol) that answers `ListDevices` and tunnels `Connect` to the fake iPad. It covers device listing, refusal of a wrong port, network byte order of `PortNumber`, then TLS, pairing and a full session over the tunnel. **Tested** against our model of usbmuxd. The real usbmuxd daemon with a real iPad is untested. |
+| **iPad networking layer vs the real Rust daemon** | The app's networking code (`ios-app/Sources/SidecarNet`: Network.framework TLS listener, keychain identity via `SecKeyCreateRandomKey` + swift-certificates, pairing state machine) has no UIKit, so it runs on the macOS CI runner with the same Apple frameworks:<br>• A Swift TLS client plays the daemon: pairing with commitment check, Ping/Pong, pen forwarding, haptics, trusted reconnection with session hand-over, and a rejected stranger that can't disturb the session.<br>• The **actual `sidecard` binary** (rustls, built for macOS in dry-run mode) pairs with it over Apple's TLS stack. Both sides show the same code (e.g. `117 131`), and the daemon injects hover → tip down (pressure 3571, then 7421) → lift → proximity out, then reconnects without pairing.<br>**Tested** on macOS 26 (not on an iPad). |
 | Config file, recordings (JSONL), replay, fake iPad, single-instance lock | Unit tests plus CI usage. **Tested.** |
 | iPad app **builds** with xtool, unsigned, in CI | The `ios` workflow runs `xtool dev build --ipa` on macos-26 / Xcode 26.6. Inspection shows arm64, `minos 17.5`, `sdk 26.5` (not compatibility mode), and the merged Info.plist has the scene manifest, Bonjour keys, iPad-only and landscape. Published as the `nightly` pre-release (HTTP 200). **Tested** (build only). |
 
 ## Built but untested (needs your iPad / machine)
 
-- **Everything the iPad app does at runtime:**
+- **The iPad app's UIKit side:**
   - coalesced 240 Hz capture
   - hover via `UIHoverGestureRecognizer`
   - `UIPencilInteraction` double-tap/squeeze
   - `UICanvasFeedbackGenerator` haptics
-  - the Network.framework TLS listener with client-certificate verification
-  - keychain identity creation with swift-certificates
-  - the pairing UI
+  - the pairing alert and the menu
   - Bonjour advertising
 
-  It compiles against the iOS 26.5 SDK; none of it has run. The most likely trouble spots:
-  1. the TLS verify block / identity handling, which compiled but may need tweaks;
-  2. whether usbmux connections reach a listener bound to `127.0.0.1` (**assumption**, per PeerTalk/Appium);
-  3. hover and touch ordering around stroke starts.
+  It compiles against the iOS 26.5 SDK. Its networking core is tested on macOS (above), but nothing has run on an iPad. The most likely trouble spots:
+  1. whether usbmux connections reach a listener bound to `127.0.0.1` (**assumption**, per PeerTalk/Appium);
+  2. iOS data-protection keychain behaviour, which differs from the macOS file keychain used in CI;
+  3. hover and touch ordering around stroke starts;
+  4. whether Pencil Pro haptics fire while hovering.
 - **KDE integration:**
   - `[kde] output` pin-to-screen through KWin D-Bus `outputName` (via `busctl`);
   - the device appearing in System Settings → Drawing Tablet;
