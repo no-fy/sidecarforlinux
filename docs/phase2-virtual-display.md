@@ -140,11 +140,16 @@ Status labels as in REPORT.md.
      - VA-API `target_usage` defaults to 7 (fastest);
      - new options `[video] encoder = "vaapi-lp"` (Intel fixed-function encoder) and `[video] scale` (fewer pixels).
    - **Not changeable from our side:** the virtual output's 60 Hz (the zkde_screencast protocol has no refresh-rate argument).
-8. **Mirroring: done by KDE.** In System Settings → Display, set `Virtual-ipad` as "Replica of" another screen. Tested on your machine. If the video drops while you change display settings, the daemon restarts the channel by itself.
-9. **Still to do:**
+8. **iPad decode + display: measured by a second renderer (DECISIONS D20). Built; the parts without UIKit are tested on macOS.**
+   - ⚙︎ → Video renderer → **Metal**: the app decodes with VideoToolbox, draws the newest frame with Metal and presents it immediately. It reports when each frame was decoded and when it reached the screen.
+   - The daemon logs `video on the iPad (p50/p95 ms, …)` next to the existing lines ([latency.md](latency.md#video-phase-2)).
+   - **AVSampleBufferDisplayLayer** (default) can't report either time.
+   - **Untested on a device:** the CAMetalLayer presentation and the menu switch. MORNING.md §12 has the A/B steps.
+9. **Mirroring: done by KDE.** In System Settings → Display, set `Virtual-ipad` as "Replica of" another screen. Tested on your machine. If the video drops while you change display settings, the daemon restarts the channel by itself.
+10. **Still to do:**
    - cursor as metadata, drawn on the iPad (currently embedded in the frames);
    - keyframe on request (needs encoder control);
-   - VideoFeedback-based latency stats (`sidecard latency --video`);
+   - `sidecard latency --video` (the stats are in the `run` log for now);
    - the 120 Hz custom mode;
    - glass-to-glass measurement.
 
