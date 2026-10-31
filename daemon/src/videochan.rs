@@ -556,8 +556,12 @@ pub async fn run_video(
                     }
                     sent_at.push_back((f.frame_id, f.encoded_ns));
                     let tick = times.and_then(|t| t.tick_ns);
-                    if let Some((to_tick, d)) =
-                        input_probe.as_ref().and_then(|p| p.on_frame_split(tick, f.encoded_ns))
+                    // A re-sent picture (keep-alive, idle keyframe) answers no input.
+                    let repeat = times.is_some_and(|t| t.repeat);
+                    if let Some((to_tick, d)) = input_probe
+                        .as_ref()
+                        .filter(|_| !repeat)
+                        .and_then(|p| p.on_frame_split(tick, f.encoded_ns))
                     {
                         input_lat.push_ns(d as i64);
                         if let Some(t) = to_tick {
