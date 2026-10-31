@@ -363,7 +363,9 @@ If the UI update link entry shows `immediate 0%`, iPadOS didn't grant immediate 
 
 How to read the new lines: [latency.md → Where the PC's time goes](latency.md#where-the-pcs-time-goes-native-backend). The interesting split is `pen input -> capture tick` (Krita + KWin + waiting for KWin's 60 Hz capture tick) versus `video stages … tick -> sent` (KWin's capture render + our conversion + encode).
 
-## 15. Second-screen lag, round 3: native backend round 2 (A/B/C, 15 min) → **paste back**
+## 15. Second-screen lag, round 3: native backend round 2 (A/B/C, 15 min) → **done 2026-10-31**
+
+> **Result (your run):** native round 2 works as designed: 121 frames/s, Y-tiled zero copy, and our own part (KWin's capture tick → sent) is ≈ 9 ms (was 13.5). `vaapi-lp` works with constant QP but encodes no faster (4.4 vs 3.8 ms). End to end, pen → on the iPad screen is ≈ 55–66 ms for all three; the iPad's decoded → on screen (≈ 38 ms) is now the biggest share. Details in latency.md.
 
 Round 2 lets KWin capture at the output's refresh rate (it was capped at 60 by us), overlaps colour conversion with encoding, prefers tiled buffers, and runs Intel's low-power encoder with constant QP. Your saved Virtual-ipad mode (2360×1640@120) stays as it is. No new packages.
 
