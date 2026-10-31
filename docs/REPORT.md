@@ -129,6 +129,7 @@ Your round-1 numbers put most of the iPad's share in the hand-off to the screen:
 | **Metal · present at once**: round 1, unchanged | Tested on your iPad (round 1) |
 | On-iPad readout per mode (decoded → screen, submit → screen, shown/s, on target, immediate %) | **Tested on macOS** (formatting); built but untested on the iPad |
 | Overlays above the video (pencil surface, labels) | Left in place: no Apple-documented iOS compositor bypass found (**assumption** that they cost no frame) |
+| A crash CI caught before it reached you | Switching away from the display link made CAMetalLayer throw (`setMaximumDrawableCount should not be called when using CAMetalDisplayLink`). **Fixed and tested on macOS:** the link is now detached before the layer changes, and a test switches through every mode mid-stream. |
 
 ## Things you should know
 
