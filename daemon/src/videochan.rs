@@ -2,15 +2,16 @@
 //! (`Hello.channel = Video`, same `session_id` as the pen session) that
 //! carries `VideoConfig` + `VideoFrame` messages from an encoder.
 //!
-//! Encoders run as a subprocess writing H.264 Annex-B to stdout
-//! (GStreamer `gst-launch-1.0`), which keeps the daemon free of GStreamer
-//! bindings and makes the encoder easy to swap (VA-API / x264 / test
-//! pattern). The pipelines for real hardware are built but untested; see
+//! Encoders: a `gst-launch-1.0` subprocess writing H.264 Annex-B to stdout
+//! (`[video] backend = "gstreamer"`, DECISIONS D18), or capture and encode
+//! inside the daemon (`"native"` / `"hybrid"`, D21, `native/`). See
 //! docs/phase2-virtual-display.md.
 
 use crate::clock::now_ns;
 use crate::conn::{MsgReader, MsgWriter};
 use crate::identity::Identity;
+use crate::native::h264::KeyframePolicy;
+use crate::native::stats::{StageStats, StageTimes};
 use crate::transport::{self, Connected};
 use crate::video::{complete_au, AnnexBSplitter, AuAssembler, GdpReader, Output};
 use anyhow::{anyhow, bail, Context, Result};
@@ -52,12 +53,51 @@ pub enum VideoSource {
         fps: u32,
         gdp: bool,
     },
+    /// Capture a PipeWire node inside the daemon (`backend = "native"` or
+    /// `"hybrid"`).
+    Native(NativeSpec),
+}
+
+/// The in-daemon backends (`native/`).
+#[derive(Debug, Clone)]
+pub struct NativeSpec {
+    /// PipeWire node id (KWin's virtual output), name or serial.
+    pub target: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub kbps: u32,
+    pub target_usage: u8,
+    pub encoder: Encoder,
+    pub kind: NativeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeKind {
+    /// DMA-BUF → VA-API colour conversion → VA-API H.264, all in-process.
+    /// `device`: a DRM render node, None = the first one that encodes H.264.
+    Va { device: Option<PathBuf> },
+    /// Shared-memory frames piped into the gst-launch encoder.
+    Hybrid,
+}
+
+impl VideoSource {
+    /// Labels of the middle stages, for sources that report stage times.
+    fn stage_labels(&self) -> Option<(&'static str, &'static str)> {
+        match self {
+            VideoSource::Native(n) if n.kind == NativeKind::Hybrid => {
+                Some(("copy out", "gst encode"))
+            }
+            VideoSource::Native(_) => Some(("convert", "encode")),
+            _ => None,
+        }
+    }
 }
 
 const X264: &str =
     "x264enc tune=zerolatency speed-preset=ultrafast bframes=0 aud=true byte-stream=true";
 
-fn tail(fps: u32) -> Vec<String> {
+pub(crate) fn tail(fps: u32) -> Vec<String> {
     // Keyframe every 2 s so a decoder that joins late recovers quickly.
     vec![
         format!("key-int-max={}", fps * 2),
@@ -99,25 +139,10 @@ pub fn test_pattern(width: u32, height: u32, fps: u32) -> VideoSource {
     }
 }
 
-/// Capture a PipeWire node (e.g. KWin's virtual output stream) and encode it.
-pub fn pipewire(
-    node: u32,
-    width: u32,
-    height: u32,
-    fps: u32,
-    encoder: Encoder,
-    kbps: u32,
-    target_usage: u8,
-) -> VideoSource {
-    let mut argv = split("gst-launch-1.0 -q");
-    argv.extend([
-        "pipewiresrc".into(),
-        format!("path={node}"),
-        "do-timestamp=true".into(),
-        "keepalive-time=1000".into(),
-        "!".into(),
-    ]);
-    argv.extend(split("queue max-size-buffers=1 leaky=downstream !"));
+/// The encoder part of a gst-launch pipeline: raw video in, H.264 out (up
+/// to `tail`). Shared by the GStreamer backend and the hybrid one.
+pub(crate) fn encoder_args(encoder: Encoder, kbps: u32, target_usage: u8) -> Vec<String> {
+    let mut argv = Vec::new();
     match encoder {
         Encoder::Vaapi | Encoder::VaapiLowPower => {
             argv.extend(split("vapostproc !"));
@@ -141,6 +166,37 @@ pub fn pipewire(
             argv.push(format!("bitrate={kbps}"));
         }
     }
+    argv
+}
+
+/// Capture a PipeWire node (e.g. KWin's virtual output stream) and encode it.
+/// `target`: a node id (`path=`, as always used for KWin's node) or a node
+/// name (`target-object=`, plus the stream properties WirePlumber needs to
+/// link it, found with a synthetic node in the VM).
+pub fn pipewire(
+    target: &str,
+    width: u32,
+    height: u32,
+    fps: u32,
+    encoder: Encoder,
+    kbps: u32,
+    target_usage: u8,
+) -> VideoSource {
+    let mut argv = split("gst-launch-1.0 -q");
+    argv.push("pipewiresrc".into());
+    if target.parse::<u32>().is_ok() {
+        argv.push(format!("path={target}"));
+    } else {
+        argv.push(format!("target-object={target}"));
+        argv.push("stream-properties=props,media.type=Video,media.category=Capture".into());
+    }
+    argv.extend([
+        "do-timestamp=true".into(),
+        "keepalive-time=1000".into(),
+        "!".into(),
+    ]);
+    argv.extend(split("queue max-size-buffers=1 leaky=downstream !"));
+    argv.extend(encoder_args(encoder, kbps, target_usage));
     argv.extend(tail(fps));
     VideoSource::Command {
         argv,
@@ -172,9 +228,18 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// A message for the iPad and, for native sources, when each stage ran.
+type Produced = (Message, Option<StageTimes>);
+
 /// Messages produced by a source, re-stamped with the daemon clock.
-async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
+/// `keyframes`: the iPad needs an IDR (only native sources can make one).
+async fn produce(
+    source: VideoSource,
+    tx: mpsc::Sender<Produced>,
+    keyframes: mpsc::UnboundedReceiver<()>,
+) -> Result<()> {
     match source {
+        VideoSource::Native(spec) => produce_native(spec, tx, keyframes).await,
         VideoSource::File {
             path,
             fps,
@@ -211,7 +276,7 @@ async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
                         }
                         other => other,
                     };
-                    if tx.send(m).await.is_err() {
+                    if tx.send((m, None)).await.is_err() {
                         return Ok(());
                     }
                 }
@@ -286,11 +351,124 @@ async fn produce(source: VideoSource, tx: mpsc::Sender<Message>) -> Result<()> {
                             })
                         }
                     };
-                    if tx.send(m).await.is_err() {
+                    if tx.send((m, None)).await.is_err() {
                         return Ok(());
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(not(all(feature = "native-video", target_os = "linux")))]
+async fn produce_native(
+    _: NativeSpec,
+    _: mpsc::Sender<Produced>,
+    _: mpsc::UnboundedReceiver<()>,
+) -> Result<()> {
+    bail!(
+        "this sidecard was built without native video (Linux, cargo feature native-video); \
+         use [video] backend = \"gstreamer\""
+    )
+}
+
+#[cfg(all(feature = "native-video", target_os = "linux"))]
+async fn produce_native(
+    spec: NativeSpec,
+    tx: mpsc::Sender<Produced>,
+    mut keyframes: mpsc::UnboundedReceiver<()>,
+) -> Result<()> {
+    use crate::native::pw::{Capture, CaptureSpec, Event};
+    let (ev_tx, mut events) = mpsc::channel::<Event>(4);
+    let cap = CaptureSpec {
+        target: spec.target.clone(),
+        width: spec.width,
+        height: spec.height,
+        max_fps: spec.fps.max(1),
+    };
+    let capture = match &spec.kind {
+        NativeKind::Hybrid => {
+            let mut args = encoder_args(spec.encoder, spec.kbps, spec.target_usage);
+            args.extend(tail(spec.fps));
+            let (fps, out) = (spec.fps, ev_tx.clone());
+            Capture::spawn(
+                cap,
+                move || {
+                    Ok(
+                        Box::new(crate::native::hybrid::GstPipeSink::new(args, fps, out))
+                            as Box<dyn crate::native::frame::FrameSink>,
+                    )
+                },
+                ev_tx,
+            )?
+        }
+        NativeKind::Va { device } => {
+            let opts = crate::native::encoder::VaOptions {
+                device: device.clone(),
+                low_power: spec.encoder == Encoder::VaapiLowPower,
+                kbps: spec.kbps,
+                fps: spec.fps.max(1),
+                target_usage: spec.target_usage,
+            };
+            Capture::spawn(
+                cap,
+                move || {
+                    Ok(Box::new(crate::native::encoder::VaEncoder::open(opts)?)
+                        as Box<dyn crate::native::frame::FrameSink>)
+                },
+                ev_tx,
+            )?
+        }
+    };
+    tracing::info!(
+        "video: native capture of PipeWire node {} ({})",
+        spec.target,
+        match spec.kind {
+            NativeKind::Va { .. } => "VA-API in the daemon",
+            NativeKind::Hybrid => "hybrid: raw frames to gst-launch",
+        }
+    );
+    let mut split = AnnexBSplitter::new();
+    let mut asm = AuAssembler::new(VideoCodec::H264);
+    let mut id = 0u32;
+    let mut last_capture = 0u64;
+    loop {
+        tokio::select! {
+            ev = events.recv() => match ev {
+                Some(Event::Format(d)) => tracing::info!("{d}"),
+                Some(Event::Frame(e)) => {
+                    for o in complete_au(&mut split, &mut asm, &e.annexb) {
+                        let m = match o {
+                            Output::Config(sets) => Message::VideoConfig(VideoConfig {
+                                codec: VideoCodec::H264,
+                                width: e.width,
+                                height: e.height,
+                                fps_milli: spec.fps * 1000,
+                                parameter_sets: sets,
+                            }),
+                            Output::Frame(au) => {
+                                id = id.wrapping_add(1);
+                                // The compositor's capture tick when known. The iPad
+                                // uses it as the presentation time: keep it increasing.
+                                last_capture = e.times.start_ns().max(last_capture + 1);
+                                Message::VideoFrame(VideoFrame {
+                                    frame_id: id,
+                                    keyframe: au.keyframe,
+                                    capture_ns: last_capture,
+                                    encoded_ns: e.times.encoded_ns,
+                                    data: au.sample,
+                                })
+                            }
+                        };
+                        if tx.send((m, Some(e.times))).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+                Some(Event::Ended(Ok(()))) | None => return Ok(()),
+                Some(Event::Ended(Err(e))) => bail!("native video: {e}"),
+            },
+            Some(()) = keyframes.recv() => capture.request_keyframe(),
         }
     }
 }
@@ -335,21 +513,34 @@ pub async fn run_video(
     }
     tracing::info!("video channel open");
 
-    let (tx, mut rx) = mpsc::channel::<Message>(8);
+    let (tx, mut rx) = mpsc::channel::<Produced>(8);
+    let (keyframe_tx, keyframe_rx) = mpsc::unbounded_channel();
+    let mut stages = source.stage_labels().map(StageStats::new);
+    // Only native sources can make a keyframe on request.
+    let can_keyframe = matches!(
+        source,
+        VideoSource::Native(NativeSpec {
+            kind: NativeKind::Va { .. },
+            ..
+        })
+    );
+    let mut keyframe_policy = KeyframePolicy::default();
     // Aborted on drop too: if this future is cancelled (pen session ended),
     // the encoder task and its gst-launch child (kill_on_drop) must go with it.
-    let mut producer = AbortOnDrop(tokio::spawn(produce(source, tx)));
+    let mut producer = AbortOnDrop(tokio::spawn(produce(source, tx, keyframe_rx)));
     let mut stats = VideoStats::default();
     // frame_id -> daemon time the frame left the encoder
     let mut sent_at: std::collections::VecDeque<(u32, u64)> = std::collections::VecDeque::new();
     let mut lat = crate::clock::LatencyStats::new(10_000);
     let mut input_lat = crate::clock::LatencyStats::new(1_000);
+    // Pen input -> the compositor's capture tick (native sources only).
+    let mut input_tick_lat = crate::clock::LatencyStats::new(1_000);
     let mut ipad_lat = crate::videostats::IpadVideoLatency::new();
     let mut last_log = tokio::time::Instant::now();
     let result = loop {
         tokio::select! {
             m = rx.recv() => {
-                let Some(m) = m else {
+                let Some((m, times)) = m else {
                     // The source ended: report why.
                     break match (&mut producer.0).await {
                         Ok(Err(e)) => Err(e),
@@ -360,9 +551,18 @@ pub async fn run_video(
                     stats.frames_sent += 1;
                     stats.keyframes_sent += f.keyframe as u64;
                     stats.bytes_sent += f.data.len() as u64;
-                    sent_at.push_back((f.frame_id, f.capture_ns));
-                    if let Some(d) = input_probe.as_ref().and_then(|p| p.on_frame(f.capture_ns)) {
+                    if f.keyframe {
+                        keyframe_policy.on_keyframe_sent(f.frame_id);
+                    }
+                    sent_at.push_back((f.frame_id, f.encoded_ns));
+                    let tick = times.and_then(|t| t.tick_ns);
+                    if let Some((to_tick, d)) =
+                        input_probe.as_ref().and_then(|p| p.on_frame_split(tick, f.encoded_ns))
+                    {
                         input_lat.push_ns(d as i64);
+                        if let Some(t) = to_tick {
+                            input_tick_lat.push_ns(t as i64);
+                        }
                     }
                     if sent_at.len() > 600 {
                         sent_at.pop_front();
@@ -370,6 +570,11 @@ pub async fn run_video(
                 }
                 if let Err(e) = wr.send(&m).await {
                     break Err(e);
+                }
+                if let (Some(st), Some(t)) = (stages.as_mut(), times) {
+                    if matches!(m, Message::VideoFrame(_)) {
+                        st.on_sent(&t, now_ns());
+                    }
                 }
             }
             m = rd.next() => match m {
@@ -387,22 +592,44 @@ pub async fn run_video(
                                 "video latency (encoder out -> iPad received) p50 {:.1} ms p95 {:.1} ms over {} frames",
                                 r.p50_us as f64 / 1000.0, r.p95_us as f64 / 1000.0, r.samples
                             );
+                            if let Some(s) = stages.as_mut().and_then(|s| s.report()) {
+                                tracing::info!("{s}");
+                            }
                             if let Some(s) = ipad_lat.summary() {
                                 tracing::info!("{s}");
                             }
+                            let to_screen = ipad_lat.encoder_to_screen_p50_us();
                             ipad_lat.clear();
                             let r = input_lat.report(None);
                             if r.samples > 0 {
+                                let rt = input_tick_lat.report(None);
+                                if rt.samples > 0 {
+                                    tracing::info!(
+                                        "video latency (pen input -> capture tick, after a pause) p50 {:.1} ms p95 {:.1} ms over {} pauses",
+                                        rt.p50_us as f64 / 1000.0, rt.p95_us as f64 / 1000.0, rt.samples
+                                    );
+                                }
                                 tracing::info!(
                                     "video latency (pen input -> frame encoded, after a pause) p50 {:.1} ms p95 {:.1} ms over {} pauses",
                                     r.p50_us as f64 / 1000.0, r.p95_us as f64 / 1000.0, r.samples
                                 );
+                                if let Some(ts) = to_screen {
+                                    tracing::info!(
+                                        "video latency (pen input -> on the iPad screen, sum of medians) about {:.0} ms: input -> encoded {:.1} + encoder out -> on screen {:.1}",
+                                        (r.p50_us + ts) as f64 / 1000.0, r.p50_us as f64 / 1000.0, ts as f64 / 1000.0
+                                    );
+                                }
                             }
                         }
                     }
                     if fb.request_keyframe {
                         stats.keyframe_requests += 1;
-                        tracing::debug!("iPad requested a keyframe (frame {})", fb.frame_id);
+                        if can_keyframe && keyframe_policy.on_request(fb.frame_id) {
+                            tracing::info!("iPad could not show frame {}: asking the encoder for a keyframe", fb.frame_id);
+                            let _ = keyframe_tx.send(());
+                        } else {
+                            tracing::debug!("iPad requested a keyframe (frame {})", fb.frame_id);
+                        }
                     }
                 }
                 Ok(Some(Message::Goodbye { .. })) | Ok(None) => break Ok(()),
@@ -413,6 +640,9 @@ pub async fn run_video(
     };
     producer.0.abort();
     wr.shutdown().await;
+    if let Some(s) = stages.as_mut().and_then(|s| s.report()) {
+        tracing::info!("{s}");
+    }
     if let Some(s) = ipad_lat.summary() {
         tracing::info!("{s}");
     }

@@ -80,6 +80,12 @@ impl IpadVideoLatency {
         *self = Self::new();
     }
 
+    /// Median "encoder out -> on screen" in this window, if the iPad
+    /// reported display times (Metal renderer) and the clocks are synced.
+    pub fn encoder_to_screen_p50_us(&self) -> Option<u32> {
+        (!self.encoder_to_screen.is_empty()).then(|| self.encoder_to_screen.report(None).p50_us)
+    }
+
     /// One log line, or None if no feedback arrived in this window.
     pub fn summary(&self) -> Option<String> {
         if self.frames == 0 {

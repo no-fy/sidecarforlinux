@@ -49,11 +49,22 @@ output = ""
 
 [video]
 # Phase 2 (experimental): off | virtual (KWin virtual monitor sized like the
-# iPad) | test-pattern | file:/path/to/clip.h264
+# iPad) | test-pattern | file:/path/to/clip.h264 | pipewire:NODE (capture an
+# existing PipeWire video node by id or name; for testing)
 mode = "off"
+# Who captures and encodes:
+#   gstreamer  a gst-launch-1.0 subprocess (tested on real hardware)
+#   native     inside sidecard: PipeWire DMA-BUF -> VA-API, zero copy, with a
+#              per-stage timing log and keyframes on request (experimental)
+#   hybrid     native PipeWire capture, frames piped into the gst-launch
+#              encoder (slower; for testing the capture on its own)
+backend = "gstreamer"
 # vaapi (GPU) | vaapi-lp (GPU fixed-function "low power" encoder, Intel) |
-# x264 (software)
+# x264 (software; gstreamer and hybrid backends only)
 encoder = "vaapi"
+# native backend: DRM render node for VA-API. Empty = the first one that can
+# encode H.264 (the one gst's vah264enc uses), e.g. "/dev/dri/renderD129".
+va_device = ""
 # VA-API speed/quality trade-off: 1 = best quality ... 7 = fastest (lowest
 # latency).
 target_usage = 7
@@ -79,7 +90,9 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 pub struct VideoCfg {
     pub mode: String,
+    pub backend: String,
     pub encoder: String,
+    pub va_device: String,
     pub target_usage: u8,
     pub scale: f64,
     pub bitrate_kbps: u32,
@@ -90,7 +103,9 @@ impl Default for VideoCfg {
     fn default() -> Self {
         VideoCfg {
             mode: "off".into(),
+            backend: "gstreamer".into(),
             encoder: "vaapi".into(),
+            va_device: String::new(),
             target_usage: 7,
             scale: 0.0,
             bitrate_kbps: 20000,
@@ -210,8 +225,22 @@ impl Config {
         }
         self.gestures()?;
         let m = self.video.mode.as_str();
-        if !(matches!(m, "off" | "virtual" | "test-pattern") || m.starts_with("file:")) {
-            bail!("video.mode must be off, virtual, test-pattern or file:PATH, got {m:?}");
+        if !(matches!(m, "off" | "virtual" | "test-pattern")
+            || m.starts_with("file:")
+            || m.strip_prefix("pipewire:").is_some_and(|t| !t.is_empty()))
+        {
+            bail!(
+                "video.mode must be off, virtual, test-pattern, file:PATH or pipewire:NODE, got {m:?}"
+            );
+        }
+        if !matches!(
+            self.video.backend.as_str(),
+            "gstreamer" | "native" | "hybrid"
+        ) {
+            bail!("video.backend must be gstreamer, native or hybrid");
+        }
+        if self.video.backend == "native" && self.video.encoder == "x264" {
+            bail!("video.backend = \"native\" encodes with VA-API: use encoder = \"vaapi\" or \"vaapi-lp\" (or backend = \"hybrid\" for x264)");
         }
         if !(1..=7).contains(&self.video.target_usage) {
             bail!("video.target_usage must be 1 (best quality) to 7 (fastest)");
@@ -283,5 +312,17 @@ mod tests {
         let bad: Config = toml::from_str("[tablet]\narea = [0.5, 0.0, 0.8, 1.0]\n").unwrap();
         assert!(bad.validate().is_err());
         assert!(toml::from_str::<Config>("[tablet]\nbogus = 1\n").is_err());
+    }
+
+    #[test]
+    fn video_backend_validation() {
+        let ok = |t: &str| toml::from_str::<Config>(t).unwrap().validate().is_ok();
+        assert!(ok("[video]\nbackend = \"native\"\nmode = \"virtual\"\n"));
+        assert!(ok(
+            "[video]\nbackend = \"hybrid\"\nencoder = \"x264\"\nmode = \"pipewire:42\"\n"
+        ));
+        assert!(!ok("[video]\nbackend = \"native\"\nencoder = \"x264\"\n"));
+        assert!(!ok("[video]\nbackend = \"ffmpeg\"\n"));
+        assert!(!ok("[video]\nmode = \"pipewire:\"\n"));
     }
 }
