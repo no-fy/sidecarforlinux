@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# The native video backend ([video] backend = "native", the default build)
+# The native video backend ([video] backend = "native", the default when built)
 # needs libclang (bindgen) and the PipeWire + libva headers at build time.
 missing=()
 pkg-config --exists libpipewire-0.3 libspa-0.2 2>/dev/null || missing+=("libpipewire (PipeWire headers)")
@@ -22,7 +22,7 @@ FEATURES=()
 if [ "${#missing[@]}" -gt 0 ]; then
   echo "note: building WITHOUT the native video backend; missing: ${missing[*]}"
   echo "      (scripts/setup-system.sh installs them: clang libpipewire libva pkgconf)."
-  echo "      backend = \"gstreamer\" (the default) works without them."
+  echo "      Without it the default video backend is gstreamer, which works too."
   FEATURES=(--no-default-features --features display)
 fi
 

@@ -52,13 +52,15 @@ output = ""
 # iPad) | test-pattern | file:/path/to/clip.h264 | pipewire:NODE (capture an
 # existing PipeWire video node by id or name; for testing)
 mode = "off"
-# Who captures and encodes:
-#   gstreamer  a gst-launch-1.0 subprocess (tested on real hardware)
-#   native     inside sidecard: PipeWire DMA-BUF -> VA-API, zero copy, with a
-#              per-stage timing log and keyframes on request (experimental)
+# Who captures and encodes. Default: native when this sidecard was built
+# with it (scripts/install-daemon.sh says if not), else gstreamer.
+#   native     inside sidecard: PipeWire DMA-BUF -> VA-API, zero copy, as
+#              fast as the virtual monitor refreshes, per-stage timing log,
+#              keyframes on request (tested on an Intel UHD 630)
+#   gstreamer  a gst-launch-1.0 subprocess (tested; no build dependencies)
 #   hybrid     native PipeWire capture, frames piped into the gst-launch
 #              encoder (slower; for testing the capture on its own)
-backend = "gstreamer"
+# backend = "native"
 # vaapi (GPU) | vaapi-lp (GPU fixed-function "low power" encoder, Intel) |
 # x264 (software; gstreamer and hybrid backends only)
 encoder = "vaapi"
@@ -115,11 +117,22 @@ pub struct VideoCfg {
     pub max_fps: u32,
 }
 
+/// The default `[video] backend`: "native" when this build has it (Linux,
+/// cargo feature native-video; faster on real hardware, DECISIONS D22),
+/// else "gstreamer".
+pub fn default_backend() -> &'static str {
+    if cfg!(all(feature = "native-video", target_os = "linux")) {
+        "native"
+    } else {
+        "gstreamer"
+    }
+}
+
 impl Default for VideoCfg {
     fn default() -> Self {
         VideoCfg {
             mode: "off".into(),
-            backend: "gstreamer".into(),
+            backend: default_backend().into(),
             encoder: "vaapi".into(),
             va_device: String::new(),
             target_usage: 7,
@@ -323,6 +336,7 @@ mod tests {
         assert_eq!(c.connection.port, sidecar_protocol::DEFAULT_PORT);
         assert_eq!(c.tablet.area, [0.0, 0.0, 1.0, 1.0]);
         assert!(c.keyboard_keys().is_empty());
+        assert_eq!(c.video.backend, default_backend());
     }
 
     #[cfg(target_os = "linux")]
