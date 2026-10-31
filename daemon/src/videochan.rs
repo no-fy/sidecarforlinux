@@ -65,7 +65,10 @@ pub struct NativeSpec {
     pub target: String,
     pub width: u32,
     pub height: u32,
+    /// Rate-control hint (and gst's frame rate for hybrid).
     pub fps: u32,
+    /// Cap on the compositor's capture rate; 0 = none.
+    pub max_fps: u32,
     pub kbps: u32,
     pub target_usage: u8,
     pub encoder: Encoder,
@@ -384,7 +387,7 @@ async fn produce_native(
         target: spec.target.clone(),
         width: spec.width,
         height: spec.height,
-        max_fps: spec.fps.max(1),
+        max_fps: spec.max_fps,
     };
     let capture = match &spec.kind {
         NativeKind::Hybrid => {

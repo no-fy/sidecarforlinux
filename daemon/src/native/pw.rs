@@ -37,7 +37,8 @@ pub struct CaptureSpec {
     /// Preferred size (KWin's virtual output follows the negotiated size).
     pub width: u32,
     pub height: u32,
-    /// Upper bound for the producer's frame rate (KWin's capture tick).
+    /// Upper bound for the producer's frame rate (KWin's capture tick);
+    /// 0 = none: as fast as the compositor ticks (its refresh rate).
     pub max_fps: u32,
 }
 
@@ -131,6 +132,15 @@ fn prop(key: FormatProperties, value: Value) -> Property {
     Property::new(key.as_raw(), value)
 }
 
+/// The most we ask for: `max_fps`, or 1000/s when uncapped (0).
+fn max_rate(spec: &CaptureSpec) -> u32 {
+    if spec.max_fps == 0 {
+        1000
+    } else {
+        spec.max_fps
+    }
+}
+
 /// One EnumFormat object; `modifiers` = None for SHM.
 fn enum_format(spec: &CaptureSpec, fourcc: u32, modifiers: Option<&[u64]>) -> Option<Object> {
     let format = drm_to_spa(fourcc)?;
@@ -183,19 +193,22 @@ fn enum_format(spec: &CaptureSpec, fourcc: u32, modifiers: Option<&[u64]>) -> Op
                 },
             ))),
         ),
-        // KWin's capture tick runs at the negotiated max framerate.
+        // KWin's capture tick runs at the negotiated max framerate. With no
+        // cap we offer up to 1000/1 with that as our default: PipeWire keeps
+        // a default that fits both ranges (spa/pod/filter.h), so KWin's own
+        // (the output's refresh rate) wins. Same shape as Sunshine's offer.
         prop(
             FormatProperties::VideoMaxFramerate,
             Value::Choice(ChoiceValue::Fraction(Choice(
                 ChoiceFlags::empty(),
                 ChoiceEnum::Range {
                     default: Fraction {
-                        num: spec.max_fps,
+                        num: max_rate(spec),
                         denom: 1,
                     },
                     min: Fraction { num: 0, denom: 1 },
                     max: Fraction {
-                        num: spec.max_fps,
+                        num: max_rate(spec),
                         denom: 1,
                     },
                 },
@@ -294,6 +307,8 @@ struct Negotiated {
     height: u32,
     /// Some = DMA-BUF with this modifier.
     modifier: Option<u64>,
+    /// Negotiated max frame rate, rounded (0 = unknown or unlimited).
+    max_fps: u32,
 }
 
 struct State {
@@ -395,6 +410,14 @@ fn on_format(st: &mut State, pod: &Pod) -> Result<Option<Vec<Vec<u8>>>> {
         width: size.width,
         height: size.height,
         modifier: has_modifier.then(|| info.modifier()),
+        max_fps: {
+            let mf = info.max_framerate();
+            if mf.denom == 0 || mf.num == 0 || mf.num / mf.denom >= 1000 {
+                0
+            } else {
+                (mf.num + mf.denom / 2) / mf.denom
+            }
+        },
     };
     let mf = info.max_framerate();
     let desc = format!(
@@ -452,6 +475,7 @@ fn on_process(st: &mut State, stream: &pw::stream::Stream) -> Result<Option<Vec<
                 let frame = Frame {
                     width: fmt.width,
                     height: fmt.height,
+                    max_fps: fmt.max_fps,
                     pixels: Pixels::DmaBuf {
                         fourcc: fmt.fourcc,
                         modifier,
@@ -487,6 +511,7 @@ fn on_process(st: &mut State, stream: &pw::stream::Stream) -> Result<Option<Vec<
                 let frame = Frame {
                     width: fmt.width,
                     height: fmt.height,
+                    max_fps: fmt.max_fps,
                     pixels: Pixels::Shm {
                         fourcc: fmt.fourcc,
                         data: &bytes[offset..end.min(bytes.len())],
@@ -710,7 +735,7 @@ mod tests {
             target: "42".into(),
             width: 2360,
             height: 1640,
-            max_fps: 60,
+            max_fps: 0,
         };
         let y_tiled = 0x0100_0000_0000_0002u64;
         let book = ModifierBook::new(vec![(DRM_XRGB8888, vec![y_tiled, 0])]);
@@ -739,10 +764,28 @@ mod tests {
             .iter()
             .find(|p| p.key == FormatProperties::VideoMaxFramerate.as_raw())
             .unwrap();
+        // Uncapped: up to 1000/1, so the compositor's own rate wins.
         assert!(matches!(
             &maxfr.value,
-            Value::Choice(ChoiceValue::Fraction(Choice(_, ChoiceEnum::Range { default, .. })))
-                if *default == Fraction { num: 60, denom: 1 }
+            Value::Choice(ChoiceValue::Fraction(Choice(_, ChoiceEnum::Range { default, min, max })))
+                if *default == Fraction { num: 1000, denom: 1 }
+                    && *min == Fraction { num: 0, denom: 1 }
+                    && *max == Fraction { num: 1000, denom: 1 }
+        ));
+        // Capped at 30.
+        let capped = CaptureSpec {
+            max_fps: 30,
+            ..spec.clone()
+        };
+        let p = props_of(&enum_formats(&capped, &book).unwrap()[0]);
+        let m = p
+            .iter()
+            .find(|p| p.key == FormatProperties::VideoMaxFramerate.as_raw())
+            .unwrap();
+        assert!(matches!(
+            &m.value,
+            Value::Choice(ChoiceValue::Fraction(Choice(_, ChoiceEnum::Range { default, max, .. })))
+                if *default == Fraction { num: 30, denom: 1 } && *max == Fraction { num: 30, denom: 1 }
         ));
         // The SHM fallbacks carry no modifier.
         for p in &params[1..] {

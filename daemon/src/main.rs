@@ -341,6 +341,7 @@ struct VideoPlan {
     encoder: videochan::Encoder,
     kbps: u32,
     fps: u32,
+    max_fps: u32,
     target_usage: u8,
     /// Virtual monitor pixel density; 0 = the iPad's.
     scale: f64,
@@ -372,6 +373,7 @@ impl VideoPlan {
             width: w,
             height: h,
             fps: self.fps,
+            max_fps: self.max_fps,
             kbps: self.kbps,
             target_usage: self.target_usage,
             encoder: self.encoder,
@@ -398,6 +400,7 @@ impl VideoPlan {
             },
             kbps: env.cfg.video.bitrate_kbps,
             fps: env.cfg.video.fps.max(1),
+            max_fps: env.cfg.video.max_fps,
             target_usage: env.cfg.video.target_usage,
             scale: env.cfg.video.scale,
         }

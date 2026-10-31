@@ -194,8 +194,12 @@ fn falls_back_to_shm_and_a_slow_sink_gets_fresh_pictures() {
     if let Some(&median) = fast_ages.get(fast_ages.len() / 2) {
         for f in &slow[1..] {
             let a = age(f).unwrap();
+            // One frame (33 ms) of slack is inherent: while the consumer is
+            // busy, PipeWire keeps the producer's pending buffer in the port's
+            // single I/O slot rather than replacing it. A FIFO backlog would
+            // grow by ~67 ms per frame here (100 ms sink, 30 fps source).
             assert!(
-                a <= median + 30,
+                a <= median + 70,
                 "slow sink got a picture {a} ms old (fast sink: {median} ms): a backlog"
             );
         }

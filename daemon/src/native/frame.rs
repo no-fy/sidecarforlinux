@@ -53,6 +53,9 @@ pub enum Pixels<'a> {
 pub struct Frame<'a> {
     pub width: u32,
     pub height: u32,
+    /// The rate the compositor will send at most (0 = unknown): the
+    /// encoder's level and rate-control frame budget.
+    pub max_fps: u32,
     pub pixels: Pixels<'a>,
     /// Filled in by the source: tick, arrival, stale buffers skipped.
     pub times: StageTimes,
