@@ -191,7 +191,16 @@ enum Settings {
     }
     /// How the Metal renderer hands frames to the screen (DECISIONS D21).
     static var metalPresent: MetalPresentMode {
-        get { UserDefaults.standard.string(forKey: "metalPresent").flatMap(MetalPresentMode.init(rawValue:)) ?? .displayLink }
+        get {
+            let saved = UserDefaults.standard.string(forKey: "metalPresent").flatMap(MetalPresentMode.init(rawValue:))
+            // The UI-update-link mode crashed the app at launch on the user's
+            // iPad Air M4 / iPadOS 27 (2026-10-31). The choice is saved, so the
+            // app crashed on every launch before the menu could be reached.
+            // Disabled until a crash log shows the cause; a saved value falls
+            // back to the display link.
+            guard let saved, saved != .uiUpdate else { return .displayLink }
+            return saved
+        }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "metalPresent") }
     }
 }
@@ -368,12 +377,13 @@ final class RootViewController: UIViewController {
             let title: String
             switch mode {
             case .displayLink: title = "Metal · display link"
-            case .uiUpdate: title = "Metal · UI update link (iOS 18+)"
+            case .uiUpdate: title = "Metal · UI update link (disabled: crashed)"
             case .immediate: title = "Metal · present at once (round 1)"
             }
             var attributes: UIMenuElement.Attributes = []
             if mode == .uiUpdate {
-                if #available(iOS 18.0, *) {} else { attributes = .disabled }
+                // See Settings.metalPresent: crashed at launch, disabled for now.
+                attributes = .disabled
             }
             let on = Settings.metalVideo && Settings.metalPresent == mode
             return UIAction(title: title, attributes: attributes, state: on ? .on : .off) { [weak self] _ in

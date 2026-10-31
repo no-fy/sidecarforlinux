@@ -53,7 +53,9 @@ final class MetalVideoView: UIView {
     /// The UI-update-link mode needs iOS 18; older systems get the display link.
     func setPresentMode(_ requested: MetalPresentMode) {
         var mode = requested
-        if #available(iOS 18.0, *) {} else if mode == .uiUpdate { mode = .displayLink }
+        // The UI-update-link mode crashed at launch on a real iPad (see
+        // Settings.metalPresent); never start it until that's understood.
+        if mode == .uiUpdate { mode = .displayLink }
         sink.setMode(mode)
         refreshUpdateLink()
     }
