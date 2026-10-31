@@ -113,7 +113,7 @@ A hand review also caught and fixed a bug that tests couldn't have shown without
 | PC: `[video] backend` defaults to **native** when the build has it (D22) | Native **tested on your machine** (121 frames/s, zero copy, ≈ 9 ms our part; other pencil apps "like usable compared to before"). The default change itself: **tested** here (config tests, with and without the native feature). |
 | iPad: **AVSampleBufferDisplayLayer** is the default renderer again, saved (D24) | Faster than Metal in **your slow-motion video**. The default change: **built but untested** on the iPad. |
 | iPad: AVSampleBufferDisplayLayer timing is a menu toggle, off by default | **Built but untested** on the iPad. |
-| iPad: **Clean screen while video is on** (hides labels, ⚙︎, hover ring, ink; a finger tap shows ⚙︎ for 6 s) | **Built but untested**. Whether it saves a refresh: **assumption**, to be judged in slow motion (MORNING §17). |
+| iPad: **Clean screen while video is on** (hides labels, ⚙︎, hover ring, ink; a finger tap shows ⚙︎ for 6 s) | **Tested on your iPad**: works, but no noticeable latency difference. Kept as an option, off by default. |
 
 ## Second-screen lag, iPad side (2026-10-31, branch `feature/ipad-metal-display`)
 

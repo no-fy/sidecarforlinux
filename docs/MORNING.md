@@ -437,7 +437,15 @@ If the readout says `not measurable`, send it anyway: it says whether the layer 
    - AVSampleBufferDisplayLayer: clean vs not;
    - Metal · display link: clean vs not.
    Tell me which of the four is fastest. If the clean screen gains nothing, switch it off again.
-5. **Optional, 240 Hz:** a 2360×1640 custom mode at 240000 mHz on Virtual-ipad, the same way you made the 120 one. With `sidecard run --video virtual`, check the `video stages` line: `peak` near 240, `stale buffers skipped` 0, `encode` p95 under ~4 ms. If they don't hold, go back to 120.
+   > **Result (your run):** no noticeable difference with the clean screen; it stays as an option (off by default).
+5. **Optional, 240 Hz:** while `sidecard run` is running (Virtual-ipad exists only then):
+
+   ```bash
+   kscreen-doctor output.Virtual-ipad.addCustomMode.2360.1640.240000.full
+   kscreen-doctor output.Virtual-ipad.mode.2360x1640@240
+   ```
+
+   Then restart `sidecard run` (KWin fixes the capture rate when the stream starts) and draw for 30 s. Check `grep -E 'PipeWire format|video stages' ~/r4.log | tail -4`: `max 239…/1000 fps`, `peak` near 240, `stale buffers skipped` 0, `encode` p95 under ~4 ms. Back to 120: `kscreen-doctor output.Virtual-ipad.mode.2360x1640@120`.
 
 ---
 

@@ -343,4 +343,5 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - a finger tap shows them for 6 s, and opening the menu restarts that.
   - The idea: with nothing drawn over the video, iPadOS needn't composite it with other UI, which could save a refresh (≈ 17 ms), mostly for Metal.
   - **Assumption, untested:** the layer's frames already skip the compositor with the overlays up, so the gain there may be nil. Judge by slow motion; with the layer's timing on, "optimized compositing" near the share of frames shown means nothing is left to gain.
+- **Result (your test, 2026-10-31):** no noticeable difference with the clean screen. It stays as an option, off by default.
 - **Undo:** select Metal in the menu; switch the clean screen off.
