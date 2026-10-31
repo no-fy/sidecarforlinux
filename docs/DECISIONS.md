@@ -247,6 +247,12 @@ Research notes with sources for everything below are in [`docs/research/`](resea
      - It never waits for a drawable on the main thread: it skips the refresh if two are still in flight.
      - **Assumption:** the immediate rendering also covers a Metal drawable presented in that transaction. The readout's "immediate %" (`UIUpdateInfo.isImmediatePresentationExpected`) shows whether iPadOS granted it.
   3. **Present at once:** round 1, unchanged, as a fallback and baseline.
+- **Result (your run, 2026-10-31, round 2):** decoded → on screen p50, iPad Air M4, iPadOS 27:
+  - **display link ≈ 36–39 ms**: the best of the three, and the default;
+  - **UI update link ≈ 45–52 ms**: its documented "one frame duration sooner" did not show up here;
+  - **present at once ≈ 45–48 ms**;
+  - AVSampleBufferDisplayLayer: not measurable (no per-frame callback), and it felt worse earlier.
+  So the display link saves ≈ 8–10 ms over round 1. What remains (≈ 2 refreshes) looks like the render server's commit-and-composite stages, which no presentation mode above removed.
 - **Overlays:** Apple describes a single render server that composites every layer. I found no Apple documentation of an iOS path that bypasses it for a fullscreen Metal layer, so the pencil surface, ink and labels above the video stay. **Assumption:** they don't add a frame. Already done: the layer is opaque, `framebufferOnly`, and its drawable is the native 2360×1640, so no scaling pass.
 - **Not used (yet):** `wantsLowLatencyEventDispatch`. It would also change how pencil touches are delivered, and the pen path is fine.
 - **Sources:**
@@ -277,4 +283,19 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - The default Linux build now needs **libclang** (bindgen) and the **libpipewire/libspa and libva headers**. On Arch that means the `clang`, `pipewire` and `libva` packages. `cargo build --no-default-features --features display` still builds without them, and macOS ignores the feature.
   - VA-API and KWin DMA-BUF can't run in the VM or on CI runners (no GPU), so the encoder is **built but untested** until you run it.
 - **Undo:** set `backend = "gstreamer"` (the default). The native code is behind the `native-video` cargo feature.
+- **Status (your run, 2026-10-31, round 1): works on real hardware, slower than GStreamer.**
+  - **Tested** on the Intel UHD 630 (iHD 26.3.5): H.264 High via EncSlice, packed headers accepted, KWin's DMA-BUF imported with no copy, 2360×1640 at level 5.1, and keyframe on request recovered a lost picture twice.
+  - Slower than `gstreamer`: pen input → frame encoded ≈ 27–33 ms vs ≈ 10–11 ms. Stages: convert 5.4–6.9 ms, encode 6.0–6.8 ms, tick → sent ≈ 13.5 ms. KWin captured at **60** frames/s instead of the ~100 GStreamer got, because we capped the negotiated max framerate at `[video] fps`.
+  - The negotiated buffer was **LINEAR** (modifier 0x0).
+  - `vaapi-lp` failed: the low-power encoder offers constant QP only (modes 0x10) without the HuC firmware.
+  - **AMD** (`va_device = renderD129`, Radeon Pro 5300M) can't import KWin's Intel-rendered buffers ("resource allocation failed"). The fallback to shared memory worked, but at 24 frames/s. AMD only makes sense if KWin itself renders on the AMD GPU.
+- **Round 2 (built; the parts without a GPU are tested):**
+  - capture as fast as the output refreshes (`[video] max_fps`, 0 = no cap);
+  - conversion and encode submitted back to back, two frames in flight, stages measured on the GPU (plus a "ready" stage: KWin's own render finishing);
+  - Y-/X-tiled modifiers offered before LINEAR on Intel;
+  - constant QP when an encoder has no CBR (`[video] qp`);
+  - `target_usage` mapped onto each driver's quality range (AMD has 32 levels; we sent 7, a slow high-quality preset);
+  - configurations that can never work are reported once instead of retried forever.
+  - Default stays `gstreamer` until native is faster on your machine.
+- **HuC (optional, untested):** Intel's media-driver README says "HuC firmware is necessary for AVC/HEVC/VP9/AV1 low power encoding bitrate control, including CBR, VBR", and that on CFL (Coffee Lake, your UHD 630) HuC loading has been off by default since kernel 4.15: set `i915.enable_guc=2`. That is a kernel parameter (`options i915 enable_guc=2` in `/etc/modprobe.d/`, root) plus a reboot. Not needed: EncSlice has CBR, and LP now runs with constant QP.
 - **Details and sources:** [`research/native-video.md`](research/native-video.md).

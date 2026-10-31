@@ -283,7 +283,9 @@ The iPad app has two video renderers (⚙︎ → **Video renderer**):
 
 What the lines mean is in [latency.md → Video](latency.md#video-phase-2). The ones from step 3 say "not reported"; that's expected for AVSampleBufferDisplayLayer.
 
-## 13. Second-screen lag, round 2: how the frame reaches the screen (15 min) → **paste back**
+## 13. Second-screen lag, round 2: how the frame reaches the screen (15 min) → **done 2026-10-31**
+
+> **Result (your run):** decoded → on screen p50: Metal · display link ≈ 36–39 ms (best, now the default), UI update link ≈ 45–52 ms, present at once ≈ 45–48 ms; AVSampleBufferDisplayLayer can't be measured. Details in DECISIONS D21 and latency.md.
 
 The Metal renderer now has three ways to hand a frame to the screen (⚙︎ → **Video renderer**):
 - **Metal · display link**: the new default. It draws the newest frame once per refresh, in step with the display.
@@ -319,7 +321,9 @@ The iPad now shows its own readout under the latency line, once a second:
 
 If the UI update link entry shows `immediate 0%`, iPadOS didn't grant immediate presentation for our frames; that's worth knowing too. If any mode goes black or says `Metal video: …`, switch to another and send a screenshot.
 
-## 14. Second-screen lag: where the PC spends its time (native backend A/B, 15 min) → **paste back**
+## 14. Second-screen lag: where the PC spends its time (native backend A/B, 15 min) → **done 2026-10-31**
+
+> **Result (your run):** the native backend works on the Intel GPU the first time (zero-copy import, keyframe on request), but was slower than GStreamer: pen input → encoded 27–33 vs 10–11 ms, because we capped KWin at 60 frames/s and waited on the CPU between stages. `vaapi-lp` had no CBR; AMD can't import Intel-rendered buffers. Round 2 is §15.
 
 `sidecard` can now capture and encode the second screen itself (`backend = "native"`, DECISIONS D22) instead of through `gst-launch-1.0` (`"gstreamer"`, still the default). The native backend logs where each frame's time goes on the PC and makes a keyframe as soon as the iPad asks for one. It has never run on a GPU yet, so expect a first-run problem; the log will name the failing step.
 
@@ -358,6 +362,40 @@ If the UI update link entry shows `immediate 0%`, iPadOS didn't grant immediate 
    Plus one sentence: does B feel different from A?
 
 How to read the new lines: [latency.md → Where the PC's time goes](latency.md#where-the-pcs-time-goes-native-backend). The interesting split is `pen input -> capture tick` (Krita + KWin + waiting for KWin's 60 Hz capture tick) versus `video stages … tick -> sent` (KWin's capture render + our conversion + encode).
+
+## 15. Second-screen lag, round 3: native backend round 2 (A/B/C, 15 min) → **paste back**
+
+Round 2 lets KWin capture at the output's refresh rate (it was capped at 60 by us), overlaps colour conversion with encoding, prefers tiled buffers, and runs Intel's low-power encoder with constant QP. Your saved Virtual-ipad mode (2360×1640@120) stays as it is. Nothing new to install.
+
+1. **Daemon from the branch:**
+
+   ```bash
+   git fetch origin && git switch feature/native-video-round2 && scripts/install-daemon.sh
+   systemctl --user stop sidecard 2>/dev/null
+   ```
+
+   Make sure `~/.config/sidecarforlinux/config.toml` has `va_device = ""` (or no `va_device` line). Keep `encoder` and `backend` as you like; the flags below override them.
+2. **A, GStreamer:** `sidecard run --video virtual --video-backend gstreamer 2>&1 | tee ~/r3-gst.log`. Draw in Krita on Virtual-ipad for 30 s with a few half-second pauses, then Ctrl-C.
+3. **B, native, EncSlice:** the same with `--video-backend native --video-encoder vaapi`, saving to `~/r3-native.log`. The same drawing, then Ctrl-C.
+4. **C, native, low-power encoder:** the same with `--video-backend native --video-encoder vaapi-lp`, saving to `~/r3-lp.log`. Expect a warning that it uses constant QP 24 because there is no CBR without the HuC firmware; that's fine.
+5. **Paste back:**
+
+   ```bash
+   grep -E 'video latency|video stages|video on the iPad|PipeWire format|VA-API|imported|modifier|rate control|keyframe|video channel|WARN|ERROR' ~/r3-gst.log ~/r3-native.log ~/r3-lp.log
+   ```
+
+   Plus one sentence per run: how does it feel?
+
+What to look for:
+- `PipeWire format: … max 120/1 fps` (was 60), and `peak … frames/s` above 60 while drawing.
+- `imported a XR24 DMA-BUF (modifier 0x100000000000002 …)`: Y-tiled; 0x0 would mean LINEAR again.
+- In `video stages`:
+  - **ready** is KWin's own GPU render of the capture;
+  - **convert** and **encode** are now GPU times;
+  - the B and C lines compare the two encoders.
+- `pen input -> frame encoded` against the GStreamer run.
+
+The stage table is in [latency.md → Where the PC's time goes](latency.md#where-the-pcs-time-goes-native-backend).
 
 ---
 

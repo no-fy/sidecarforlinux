@@ -187,7 +187,35 @@ Pipelining (VPP of frame N+1 while frame N encodes) would only raise throughput 
 | "Skip older queued buffers" branch | unit test only | gst's `pipewiresink` recycles its buffer instead of queueing several, so a real queue of 2+ never formed in the VM. KWin (driver, 2–4 buffers) may queue; the log's "stale buffers skipped" will tell. |
 | `backend = "hybrid"` end to end: PipeWire → our consumer → raw frames → gst x264 → AVCC → video channel → fake iPad | CLI in the VM and CI | **tested** (649 frames, stage line logged) |
 | `backend = "native"` without a GPU | VM | **tested**: fails with "no VA-API device can encode H.264 … no /dev/dri/renderD* nodes" and the channel retries |
-| DMA-BUF negotiation with KWin, VA import, VPP, VA H.264 encode, rate control, packed headers accepted by iHD | needs your machine | **built but untested** |
-| KWin's `pts` is the capture tick on CLOCK_MONOTONIC | KWin source (`addHeader`, `VsyncSource`) | **assumption** until the stage line shows a plausible "capture tick -> daemon" |
+| DMA-BUF negotiation with KWin, VA import, VPP, VA H.264 encode, rate control, packed headers accepted by iHD | your machine, 2026-10-31 | **tested** (round 1): iHD 26.3.5, H.264 High via EncSlice, packed headers 0x5, XR24 DMA-BUF imported (modifier 0x0) with no copy, 2360×1640 level 5.1 CBR, keyframe on request recovered a lost picture twice |
+| KWin's `pts` is the capture tick on CLOCK_MONOTONIC | your machine | **tested**: capture tick → daemon 0.8 ms, plausible |
+| Round 2 on a GPU: uncapped capture rate, conversion and encode in flight together, GPU-stage timing, tiled modifiers, constant QP for `vaapi-lp`, quality level per driver | — | **built but untested** (the parts without a GPU are unit-tested: in-flight limit, ordering, failed encodes, shutdown, slot rotation, QP in the slice header via FFmpeg's parser) |
 | Implicit sync is enough for VA to read KWin's buffer | driver behaviour | **assumption** |
 | MSRV 1.80 | `cargo +1.80 check --workspace --all-targets` with a lockfile resolved for 1.80 (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) | **tested**. Note: the committed `Cargo.lock` (already on `main`) has `clap_lex 1.1.1`, which needs Rust ≥ 1.85, so the lockfile as committed doesn't build on 1.80. |
+
+## 9. Round 1 on the real machine, and what round 2 changes
+
+Your A/B (2026-10-31, Intel UHD 630, Virtual-ipad 2360×1640@120, Metal renderer), medians:
+
+| | gstreamer | native, round 1 |
+|---|---|---|
+| capture rate | ~95–100 frames/s | 60 ("PipeWire format: XR24 2360x1640, max 60/1 fps") |
+| pen input → frame encoded | 10.4–11.4 ms | 27–33 ms |
+| pen input → capture tick | — | 14–18 ms |
+| stages | — | tick → daemon 0.8, convert 5.4–6.9, encode 6.0–6.8, send 0.5; tick → sent ≈ 13.5 ms |
+
+What it told us, and the changes:
+
+1. **We capped KWin at 60.** The consumer offered `maxFramerate` `[0, 60]` (`[video] fps`), and KWin's capture tick runs at the negotiated max (§1). With two ranges, PipeWire's `spa_pod_filter_prop` (spa/pod/filter.h) keeps one side's default if it lies in the intersection, else the other side's, else the minimum. So we now offer `[0, 1000]` with default 1000 (Sunshine's shape): KWin's default, its output refresh, wins. `[video] max_fps` (0 = none) caps it on purpose; the encoder plans its level and per-frame bit budget for the negotiated rate.
+2. **Back-to-back CPU waits.** Round 1 synced on the CPU after the conversion and again after the encode. Now:
+   - Per frame: wait for KWin's render to finish (stage **ready**), queue the conversion and the encode together, then wait only until the conversion has read KWin's buffer, which is when KWin gets it back.
+   - A completion thread waits for the encode, so frame N+1's conversion overlaps frame N's encode (two in flight).
+   - Why the sync means "VPP has read it": iHD's `SyncSurface` waits on the buffer object for every pending access, reads included (`mos_bo_wait`; media-driver source read 2026-10-31).
+   - Waiting on the encoder's input surface before reading the coded buffer is what FFmpeg's VA-API encoder does.
+   - **Assumption:** calling libva from two threads on one display is safe. oneVPL uses iHD that way; Mesa locks per context.
+3. **LINEAR buffers.** The import used modifier 0x0. Rendering to and sampling from linear memory is the slow path on Intel. We now offer Y- and X-tiled ahead of LINEAR on Intel; a failed import still renegotiates without that modifier. The log shows which modifier VA allocates for VPP input and which one KWin picked.
+4. **`vaapi-lp`:** "no CBR rate control (modes 0x10)". On Gen9 the low-power encoder offers constant QP only unless the HuC firmware is loaded (Intel's media-driver README; `i915.enable_guc=2`, D22). It now runs with constant QP (`[video] qp`, default 24), and the log lists each entry point's rate-control modes. Your LP-vs-EncSlice encode times will show whether LP is worth it.
+5. **AMD (`renderD129`):** it can't import Intel-rendered buffers ("resource allocation failed"). It falls back to shared memory: KWin's CPU readback costs 20–26 ms, and 24 frames/s at most. It also revealed that we sent quality level 7 to a driver with 32 levels (a slow preset: 31.6 ms per frame). `target_usage` 1–7 is now mapped onto 1..N on every driver (7 → N, the fastest).
+6. **Configurations that can never work** (no such device or entry point, no usable rate control, no VPP) are reported once; the video stays off until the iPad reconnects instead of retrying every 1–10 s.
+
+Still open: why GStreamer's pen → encoded is ~10 ms when our tick → sent alone was 13.5 ms. Candidates are the cap (60 vs 120 Hz tick wait), LINEAR, and our CPU waits; round 2 changes all three, and the new **ready** stage separates KWin's own render time from ours.

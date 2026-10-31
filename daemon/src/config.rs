@@ -64,6 +64,8 @@ backend = "gstreamer"
 encoder = "vaapi"
 # native backend: DRM render node for VA-API. Empty = the first one that can
 # encode H.264 (the one gst's vah264enc uses), e.g. "/dev/dri/renderD129".
+# Use the GPU KWin renders on: another GPU can't take KWin's buffers directly
+# and falls back to a slow CPU copy (seen with Intel + AMD in one laptop).
 va_device = ""
 # VA-API speed/quality trade-off: 1 = best quality ... 7 = fastest (lowest
 # latency). The native backend maps it onto the driver's own range (Intel
