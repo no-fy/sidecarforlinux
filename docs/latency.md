@@ -48,11 +48,34 @@ How to read the iPad line:
 - decode and the wait for the screen are differences of two iPad timestamps, so clock sync doesn't affect them.
 - **N frames in T s** is the frame rate the PC really sent while the screen kept changing. KWin sends nothing when nothing moves, plus a keep-alive every second. About 600 per 10 s while drawing means 60 fps; 1200 would mean a 120 Hz capture.
 - **replaced by a newer frame**: decoded but never shown, because a newer one was ready first. The Metal renderer always shows the newest frame. If the PC sends more than 60 fps, the 60 Hz iPad can't show them all, so this number grows.
-- **not decoded**: decode errors, or frames before the first keyframe after a renderer switch. The iPad asks for a keyframe, but the daemon can't force one yet (D18), so it waits for the next one: every 2 s.
+- **not decoded**: decode errors, or frames before the first keyframe after a renderer switch. The iPad asks for a keyframe. With `backend = "native"` the daemon makes one at once (log: `iPad could not show frame N: asking the encoder for a keyframe`); the GStreamer backend can't (D18), so the iPad waits for the next one, every 2 s.
 
 With **AVSampleBufferDisplayLayer** (the fallback renderer), the line says the times aren't reported. That layer decodes and displays inside iPadOS and has no per-frame callback for either, so decode and display time are unknowable there with public API. Comparing it with Metal is therefore by feel, or with a camera (below), plus the Metal numbers showing how much the iPad side can cost at all.
 
-Rough total, pencil to iPad screen: touch → uinput (≈ 9 ms p50) + pen input → frame encoded (≈ 33 ms measured) + encoder out → on screen (Metal line). That's a sum of medians, not a measured distribution.
+Rough total, pencil to iPad screen: touch → uinput (≈ 9 ms p50) + pen input → frame encoded (≈ 33 ms measured) + encoder out → on screen (Metal line). That's a sum of medians, not a measured distribution. With the Metal renderer the daemon prints the last two added up: `video latency (pen input -> on the iPad screen, sum of medians) about N ms`.
+
+### Where the PC's time goes (native backend)
+
+With `[video] backend = "native"` (or `--video-backend native`), two more lines say where "pen input -> frame encoded" goes:
+
+```
+video stages p50/p95 ms over N frames: capture tick -> daemon A, convert B, encode C, send D; tick -> sent E; S stale buffers skipped; peak F frames/s
+video latency (pen input -> capture tick, after a pause) p50 … ms p95 … ms over N pauses
+```
+
+| Part | From → to | What it contains |
+|---|---|---|
+| pen input → capture tick | uinput write → KWin's capture tick for the frame that shows it | Krita drawing the stroke, KWin compositing, and the **wait for KWin's next capture tick**. KWin ticks on a fixed 60 Hz grid (`VsyncSource::arm`), so 0–16.7 ms of this is that wait, 8.3 ms on average. |
+| capture tick → daemon | the tick (`spa_meta_header.pts`, CLOCK_MONOTONIC) → the buffer reached sidecard | KWin re-rendering the scene into the capture buffer, PipeWire hand-off. |
+| convert | buffer dequeued → VA-API colour conversion done (KWin gets the buffer back here) | DMA-BUF import (cached) + BGRx → NV12 on the GPU. Also waits for KWin's rendering to finish (implicit sync). |
+| encode | conversion done → H.264 bytes in hand | VA-API encode. |
+| send | bytes in hand → written to the iPad's socket | AVCC packaging, TLS. |
+| **stale buffers skipped** | | Older pictures dropped because a newer one was already waiting: only the newest is encoded. |
+| **peak frames/s** | | The busiest second: the real capture rate while something keeps changing (60 at most while KWin ticks at 60 Hz). |
+
+The two pen lines don't share the same pauses exactly (frames captured before the input don't count for "capture tick"), but their medians add up: input → tick + tick → sent ≈ input → encoded + send.
+
+`hybrid` logs the same line with "copy out" (copy out of PipeWire) and "gst encode" (pipe + gst-launch) in the middle.
 
 ### What isn't measured (yet)
 

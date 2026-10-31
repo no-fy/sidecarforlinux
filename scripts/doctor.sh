@@ -111,6 +111,30 @@ else
 fi
 have ffmpeg && info "$(ffmpeg -hide_banner -version 2>/dev/null | head -1)"
 
+# [video] backend = "native": which render node can do what (va_device).
+for node in /dev/dri/renderD*; do
+  [ -e "$node" ] || continue
+  drv=$(basename "$(readlink "/sys/class/drm/$(basename "$node")/device/driver" 2>/dev/null)" 2>/dev/null)
+  if have vainfo; then
+    caps=$(vainfo --display drm --device "$node" 2>/dev/null)
+    h264=$(echo "$caps" | grep -E 'VAProfileH264(High|Main|ConstrainedBaseline)' | grep -oE 'VAEntrypointEncSlice(LP)?' | sort -u | tr '\n' ' ')
+    vpp=$(echo "$caps" | grep -q 'VAEntrypointVideoProc' && echo yes || echo no)
+    vendor=$(echo "$caps" | grep -m1 'Driver version' | sed 's/.*Driver version: *//')
+    info "$node ($drv): H.264 encode: ${h264:-none}; video processing: $vpp; ${vendor:-no VA driver}"
+  else
+    info "$node ($drv)"
+  fi
+done
+if have pipewire; then info "PipeWire: $(pipewire --version 2>/dev/null | grep -m1 'Linked with')"; fi
+if pw-cli info 0 >/dev/null 2>&1; then ok "PipeWire is running in this session"; else warn "PipeWire not reachable (pw-cli info 0 failed)"; fi
+# Building sidecard's native backend (default build): libclang + headers.
+if pkg-config --exists libpipewire-0.3 libspa-0.2 libva libva-drm 2>/dev/null; then
+  ok "build: PipeWire and libva headers found (native video backend)"
+else
+  info "build: PipeWire/libva headers missing (pacman -S libpipewire libva pkgconf); install-daemon.sh then builds without the native backend"
+fi
+if ldconfig -p 2>/dev/null | grep -q 'libclang[-.0-9]*\.so'; then ok "build: libclang found (bindgen)"; else info "build: libclang missing (pacman -S clang); needed to build the native video backend"; fi
+
 hdr "USB / usbmuxd / iPad"
 if have usbmuxd; then info "$(usbmuxd --version 2>/dev/null | head -1)"; else fail "usbmuxd not installed (pacman -S usbmuxd)"; fi
 if have systemctl; then

@@ -5,8 +5,29 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "+ cargo build --release -p sidecard"
-cargo build --release -p sidecard
+# The native video backend ([video] backend = "native", the default build)
+# needs libclang (bindgen) and the PipeWire + libva headers at build time.
+missing=()
+pkg-config --exists libpipewire-0.3 libspa-0.2 2>/dev/null || missing+=("libpipewire (PipeWire headers)")
+pkg-config --exists libva libva-drm 2>/dev/null || missing+=("libva (VA-API headers)")
+have_libclang() {
+  [ -n "${LIBCLANG_PATH:-}" ] && return 0
+  ldconfig -p 2>/dev/null | grep -q 'libclang[-.0-9]*\.so' && return 0
+  compgen -G '/usr/lib*/libclang*.so*' >/dev/null || compgen -G '/usr/lib*/llvm*/lib/libclang*.so*' >/dev/null
+}
+have_libclang || missing+=("clang (libclang, for bindgen)")
+command -v pkg-config >/dev/null 2>&1 || missing+=("pkgconf")
+
+FEATURES=()
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo "note: building WITHOUT the native video backend; missing: ${missing[*]}"
+  echo "      (scripts/setup-system.sh installs them: clang libpipewire libva pkgconf)."
+  echo "      backend = \"gstreamer\" (the default) works without them."
+  FEATURES=(--no-default-features --features display)
+fi
+
+echo "+ cargo build --release -p sidecard ${FEATURES[*]}"
+cargo build --release -p sidecard "${FEATURES[@]}"
 install -Dm755 target/release/sidecard "$HOME/.local/bin/sidecard"
 echo "installed $HOME/.local/bin/sidecard ($("$HOME/.local/bin/sidecard" --version))"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "note: add ~/.local/bin to your PATH";; esac
