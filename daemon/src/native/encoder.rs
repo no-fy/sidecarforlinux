@@ -21,6 +21,7 @@ use super::h264::{level_for, Gop, PicPlan, Profile, StreamParams};
 use super::stats::StageTimes;
 use super::va::{Buffer, Config, Context, Display, Surface};
 use super::va_sys as sys;
+use super::Unsupported;
 use crate::clock::now_ns;
 use anyhow::{anyhow, bail, Context as _, Result};
 use std::path::PathBuf;
@@ -35,6 +36,102 @@ pub struct VaOptions {
     pub fps: u32,
     /// VA quality level, 1 = best quality ... 7 = fastest.
     pub target_usage: u8,
+    /// Constant QP (1-51); 0 = CBR at `kbps` when the encoder has it, else
+    /// constant QP `DEFAULT_QP`.
+    pub qp: u8,
+}
+
+/// Rate control the encoder runs with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateControl {
+    Cbr,
+    /// Constant QP: no bitrate target. What Gen9's low-power encoder offers
+    /// without the HuC firmware.
+    Cqp(u8),
+}
+
+/// Constant QP when none is configured: sharp text on a 2360x1640 desktop,
+/// a few Mbit/s while drawing; bursts while whole windows move are fine
+/// over USB (assumption, to be tuned with real numbers).
+pub const DEFAULT_QP: u8 = 24;
+
+/// `VAConfigAttribRateControl` bits as words, for the log.
+pub fn rc_names(mask: u32) -> String {
+    let names = [
+        (sys::VA_RC_CBR, "CBR"),
+        (sys::VA_RC_VBR, "VBR"),
+        (sys::VA_RC_VCM, "VCM"),
+        (sys::VA_RC_CQP, "CQP"),
+        (sys::VA_RC_VBR_CONSTRAINED, "VBR_CONSTRAINED"),
+        (sys::VA_RC_ICQ, "ICQ"),
+        (sys::VA_RC_MB, "MB"),
+        (sys::VA_RC_CFS, "CFS"),
+        (sys::VA_RC_PARALLEL, "PARALLEL"),
+        (sys::VA_RC_QVBR, "QVBR"),
+        (sys::VA_RC_AVBR, "AVBR"),
+        (sys::VA_RC_TCBRC, "TCBRC"),
+    ];
+    let v: Vec<&str> = names
+        .iter()
+        .filter(|(b, _)| mask & b != 0)
+        .map(|(_, n)| *n)
+        .collect();
+    if v.is_empty() {
+        "none".into()
+    } else {
+        v.join(" ")
+    }
+}
+
+/// CBR if offered (and no QP forced), else constant QP if offered.
+pub fn choose_rate_control(modes: u32, qp: u8) -> Option<RateControl> {
+    if qp > 0 {
+        return (modes & sys::VA_RC_CQP != 0).then_some(RateControl::Cqp(qp.min(51)));
+    }
+    if modes & sys::VA_RC_CBR != 0 {
+        Some(RateControl::Cbr)
+    } else if modes & sys::VA_RC_CQP != 0 {
+        Some(RateControl::Cqp(DEFAULT_QP))
+    } else {
+        None
+    }
+}
+
+/// `[video] target_usage` (1 = best quality ... 7 = fastest, like
+/// GStreamer's) on the driver's own scale (1 = best ... `levels` =
+/// fastest): Intel's iHD has 7 levels, Mesa's radeonsi 32. Round 1 sent 7
+/// to a 32-level AMD driver, a slow high-quality preset.
+pub fn quality_level(target_usage: u8, levels: u32) -> u32 {
+    if levels <= 1 {
+        return 1;
+    }
+    let tu = target_usage.clamp(1, 7) as u32;
+    1 + ((tu - 1) * (levels - 1) + 3) / 6
+}
+
+/// Intel (i915) tiling modifiers, drm_fourcc.h: fourcc_mod_code(INTEL, n).
+const I915_FORMAT_MOD_X_TILED: u64 = (1 << 56) | 1;
+const I915_FORMAT_MOD_Y_TILED: u64 = (1 << 56) | 2;
+
+/// Modifiers to offer for one format: what VA allocates for VPP input (the
+/// probe), the plain tilings Intel's VA driver imports (KMS-grab capture
+/// imports them too), then LINEAR. Order = preference.
+pub fn modifier_offer(probed: Option<u64>, intel: bool) -> Vec<u64> {
+    let mut v = Vec::new();
+    let mut add = |m: u64| {
+        if !v.contains(&m) {
+            v.push(m);
+        }
+    };
+    if let Some(m) = probed {
+        add(m);
+    }
+    if intel {
+        add(I915_FORMAT_MOD_Y_TILED);
+        add(I915_FORMAT_MOD_X_TILED);
+    }
+    add(DRM_FORMAT_MOD_LINEAR);
+    v
 }
 
 /// HRD/CPB length in milliseconds of the bitrate. GStreamer vah264enc's
@@ -179,6 +276,7 @@ pub fn slice_param(
         idr_pic_id: plan.idr_pic_id as u16,
         RefPicList0: [invalid_pic(); 32],
         RefPicList1: [invalid_pic(); 32],
+        slice_qp_delta: p.slice_qp_delta,
         ..Default::default()
     };
     if let (false, Some((surface, rp))) = (plan.idr, reference) {
@@ -304,6 +402,7 @@ pub struct VaEncoder {
     opts: VaOptions,
     profile: Profile,
     entrypoint: sys::VAEntrypoint,
+    rate_control: RateControl,
     packed: u32,
     has_packed_attr: bool,
     quality_levels: u32,
@@ -333,8 +432,10 @@ impl VaEncoder {
         } else {
             "EncSlice"
         };
+        let unsupported = |m: String| anyhow::Error::new(Unsupported(m));
         let display = match &opts.device {
-            Some(p) => Display::open(p)?,
+            Some(p) => Display::open(p)
+                .map_err(|e| unsupported(format!("[video] va_device {}: {e:#}", p.display())))?,
             None => {
                 let mut tried = Vec::new();
                 let mut found = None;
@@ -352,39 +453,74 @@ impl VaEncoder {
                     }
                 }
                 found.ok_or_else(|| {
-                    anyhow!(
+                    unsupported(format!(
                         "no VA-API device can encode H.264 with {ep_name} ({}); see `vainfo`",
                         if tried.is_empty() {
                             "no /dev/dri/renderD* nodes".to_string()
                         } else {
                             tried.join("; ")
                         }
-                    )
+                    ))
                 })?
             }
         };
         let profile = h264_profile(&display, ep).ok_or_else(|| {
-            anyhow!(
+            unsupported(format!(
                 "{} ({}) has no H.264 {ep_name} entry point (`vainfo` lists what it has)",
                 display.path.display(),
                 display.vendor
-            )
+            ))
         })?;
         let vp = va_profile(profile);
         if !display
             .entrypoints(sys::VAProfileNone)
             .contains(&sys::VAEntrypointVideoProc)
         {
-            bail!(
+            return Err(unsupported(format!(
                 "{} has no VA video processing (needed for RGB -> NV12)",
                 display.path.display()
-            );
+            )));
         }
-        let rc = display
+        // What each H.264 entry point offers, for the log (LP on Gen9 needs
+        // the HuC firmware for any bitrate control).
+        let modes_of = |e| {
+            h264_profile(&display, e)
+                .and_then(|p| display.attribute(va_profile(p), e, sys::VAConfigAttribRateControl))
+        };
+        let both = [
+            (sys::VAEntrypointEncSlice, "EncSlice"),
+            (sys::VAEntrypointEncSliceLP, "EncSliceLP"),
+        ]
+        .iter()
+        .map(|&(e, n)| match modes_of(e) {
+            Some(m) => format!("{n}: {}", rc_names(m)),
+            None => format!("{n}: not offered"),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+        tracing::info!("VA-API H.264 rate control by entry point: {both}");
+        let rc_modes = display
             .attribute(vp, ep, sys::VAConfigAttribRateControl)
             .unwrap_or(0);
-        if rc & sys::VA_RC_CBR == 0 {
-            bail!("the {ep_name} H.264 encoder has no CBR rate control (modes {rc:#x})");
+        let rate_control = choose_rate_control(rc_modes, opts.qp).ok_or_else(|| {
+            unsupported(if opts.qp > 0 {
+                format!(
+                    "[video] qp = {} needs constant-QP rate control, which the {ep_name} H.264 encoder lacks (it has: {})",
+                    opts.qp,
+                    rc_names(rc_modes)
+                )
+            } else {
+                format!(
+                    "the {ep_name} H.264 encoder has neither CBR nor constant QP (it has: {}); try encoder = \"vaapi\"",
+                    rc_names(rc_modes)
+                )
+            })
+        })?;
+        if let (RateControl::Cqp(q), 0) = (rate_control, opts.qp) {
+            tracing::warn!(
+                "the {ep_name} H.264 encoder has no CBR ({}; on Gen9 low-power encoding needs the HuC firmware for that): using constant QP {q} instead ([video] qp sets it)",
+                rc_names(rc_modes)
+            );
         }
         let packed_attr = display.attribute(vp, ep, sys::VAConfigAttribEncPackedHeaders);
         let quality_levels = display
@@ -396,18 +532,23 @@ impl VaEncoder {
         let vpp_ctx = display
             .context(&vpp_config, 0, 0, &[])
             .context("VA video processing context")?;
+        let intel = display.vendor.contains("Intel");
         let mut formats = Vec::new();
+        let mut probes = Vec::new();
         for drm in [DRM_XRGB8888, DRM_ARGB8888, DRM_XBGR8888, DRM_ABGR8888] {
             let va = va_fourcc(drm).unwrap();
-            let mut mods = Vec::new();
-            if let Some(m) = display.probe_modifier(va) {
-                mods.push(m);
-            }
-            if !mods.contains(&DRM_FORMAT_MOD_LINEAR) {
-                mods.push(DRM_FORMAT_MOD_LINEAR);
-            }
-            formats.push((drm, mods));
+            let probed = display.probe_modifier(va);
+            probes.push(format!(
+                "{} {}",
+                fourcc_name(drm),
+                probed.map_or("failed".to_string(), |m| format!("{m:#x}"))
+            ));
+            formats.push((drm, modifier_offer(probed, intel)));
         }
+        tracing::info!(
+            "VA-API modifier the driver allocates for VPP input: {}",
+            probes.join(", ")
+        );
         let device = format!("{} ({})", display.path.display(), display.vendor);
         tracing::info!(
             "VA-API encoder: {device}, H.264 {:?} via {ep_name}, packed headers {:#x}, quality levels {}, DMA-BUF import offered: {}",
@@ -433,6 +574,7 @@ impl VaEncoder {
             opts,
             profile,
             entrypoint: ep,
+            rate_control,
             packed: packed_attr.unwrap_or(0) & WANT_PACKED,
             has_packed_attr: packed_attr.is_some(),
             quality_levels,
@@ -459,11 +601,21 @@ impl VaEncoder {
                 level_idc: level,
                 width,
                 height,
+                slice_qp_delta: match self.rate_control {
+                    RateControl::Cbr => 0,
+                    RateControl::Cqp(q) => q as i8 - 26,
+                },
             };
             let (aw, ah) = (params.mb_width() * 16, params.mb_height() * 16);
             let mut attrs = vec![
                 (sys::VAConfigAttribRTFormat, sys::VA_RT_FORMAT_YUV420),
-                (sys::VAConfigAttribRateControl, sys::VA_RC_CBR),
+                (
+                    sys::VAConfigAttribRateControl,
+                    match self.rate_control {
+                        RateControl::Cbr => sys::VA_RC_CBR,
+                        RateControl::Cqp(_) => sys::VA_RC_CQP,
+                    },
+                ),
             ];
             if self.has_packed_attr {
                 attrs.push((sys::VAConfigAttribEncPackedHeaders, self.packed));
@@ -479,10 +631,15 @@ impl VaEncoder {
                 .context("H.264 encode context")?;
             let coded = d.coded_buffer(&ctx, (aw * ah * 3 / 2) as usize + (64 << 10))?;
             tracing::info!(
-                "VA-API encoding {width}x{height} (coded {aw}x{ah}) for up to {fps} frames/s, level {}.{}, CBR {} kbit/s, CPB {CPB_MS} ms, quality level {}, IDR on request",
+                "VA-API encoding {width}x{height} (coded {aw}x{ah}) for up to {fps} frames/s, level {}.{}, {}, quality level {} of {} (target_usage {}), IDR on request",
                 level / 10,
                 level % 10,
-                self.opts.kbps,
+                match self.rate_control {
+                    RateControl::Cbr => format!("CBR {} kbit/s, CPB {CPB_MS} ms", self.opts.kbps),
+                    RateControl::Cqp(q) => format!("constant QP {q}"),
+                },
+                quality_level(self.opts.target_usage, self.quality_levels),
+                self.quality_levels,
                 self.opts.target_usage
             );
             self.session = Some(Session {
@@ -686,6 +843,7 @@ impl FrameSink for VaEncoder {
             }
             None => return Ok(None),
         };
+        let rc = self.rate_control;
         let (packed_flags, kbps, quality, levels) = (
             self.packed,
             self.opts.kbps,
@@ -704,12 +862,14 @@ impl FrameSink for VaEncoder {
                 sys::VAEncSequenceParameterBufferType,
                 &seq_param(&s.params, kbps),
             )?);
-            bufs.push(d.misc(
-                &s.ctx,
-                sys::VAEncMiscParameterTypeRateControl,
-                &rate_control(kbps),
-            )?);
-            bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeHRD, &hrd(kbps))?);
+            if rc == RateControl::Cbr {
+                bufs.push(d.misc(
+                    &s.ctx,
+                    sys::VAEncMiscParameterTypeRateControl,
+                    &rate_control(kbps),
+                )?);
+                bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeHRD, &hrd(kbps))?);
+            }
             let fr = sys::VAEncMiscParameterFrameRate {
                 framerate: s.fps,
                 ..Default::default()
@@ -717,7 +877,7 @@ impl FrameSink for VaEncoder {
             bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeFrameRate, &fr)?);
             if levels > 1 {
                 let q = sys::VAEncMiscParameterBufferQualityLevel {
-                    quality_level: quality.clamp(1, levels),
+                    quality_level: quality_level(quality as u8, levels),
                     ..Default::default()
                 };
                 bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeQualityLevel, &q)?);
@@ -780,6 +940,7 @@ mod tests {
             level_idc: 51,
             width: 2360,
             height: 1640,
+            slice_qp_delta: 0,
         }
     }
 
@@ -849,6 +1010,62 @@ mod tests {
         let pic = pic_param(&p, &again, 10, Some((11, pf)), 99);
         assert_eq!(pic.ReferenceFrames[0].flags, sys::VA_PICTURE_H264_INVALID);
         assert_eq!(slice_param(&p, &again, Some((11, pf))).idr_pic_id, 1);
+    }
+
+    #[test]
+    fn quality_level_spans_the_drivers_range() {
+        // Intel iHD: 7 levels, the same numbers.
+        for tu in 1..=7 {
+            assert_eq!(quality_level(tu, 7), tu as u32);
+        }
+        // Mesa radeonsi: 32 levels; 7 must be the fastest, 1 the best.
+        assert_eq!(quality_level(7, 32), 32);
+        assert_eq!(quality_level(1, 32), 1);
+        assert_eq!(quality_level(4, 32), 17);
+        assert_eq!(quality_level(9, 32), 32); // clamped
+        assert_eq!(quality_level(7, 0), 1);
+    }
+
+    #[test]
+    fn rate_control_choice() {
+        let cbr_cqp = sys::VA_RC_CBR | sys::VA_RC_VBR | sys::VA_RC_CQP;
+        assert_eq!(choose_rate_control(cbr_cqp, 0), Some(RateControl::Cbr));
+        // Gen9 low power without HuC: modes 0x10 = CQP only.
+        assert_eq!(
+            choose_rate_control(0x10, 0),
+            Some(RateControl::Cqp(DEFAULT_QP))
+        );
+        assert_eq!(choose_rate_control(0x10, 30), Some(RateControl::Cqp(30)));
+        assert_eq!(choose_rate_control(cbr_cqp, 20), Some(RateControl::Cqp(20)));
+        assert_eq!(choose_rate_control(sys::VA_RC_CBR, 20), None);
+        assert_eq!(choose_rate_control(sys::VA_RC_VBR, 0), None);
+        assert_eq!(rc_names(0x10), "CQP");
+        assert_eq!(rc_names(cbr_cqp), "CBR VBR CQP");
+    }
+
+    #[test]
+    fn intel_gets_tiled_modifiers_before_linear() {
+        assert_eq!(
+            modifier_offer(Some(I915_FORMAT_MOD_Y_TILED), true),
+            vec![I915_FORMAT_MOD_Y_TILED, I915_FORMAT_MOD_X_TILED, 0]
+        );
+        assert_eq!(
+            modifier_offer(None, true),
+            vec![I915_FORMAT_MOD_Y_TILED, I915_FORMAT_MOD_X_TILED, 0]
+        );
+        let amd = 0x0200_0000_0001_2345u64;
+        assert_eq!(modifier_offer(Some(amd), false), vec![amd, 0]);
+        assert_eq!(modifier_offer(Some(0), false), vec![0]);
+    }
+
+    #[test]
+    fn constant_qp_reaches_the_slice() {
+        let p = StreamParams {
+            slice_qp_delta: -2,
+            ..params()
+        };
+        let mut g = Gop::default();
+        assert_eq!(slice_param(&p, &g.next(false), None).slice_qp_delta, -2);
     }
 
     #[test]

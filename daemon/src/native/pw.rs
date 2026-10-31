@@ -49,7 +49,31 @@ pub enum Event {
     Format(String),
     Frame(Encoded),
     /// The thread ended (Ok when stopped on purpose).
-    Ended(std::result::Result<(), String>),
+    Ended(std::result::Result<(), EndError>),
+}
+
+/// Why capture stopped. `unsupported`: the configuration can never work
+/// here (see `native::Unsupported`), so don't retry.
+#[derive(Debug, Clone)]
+pub struct EndError {
+    pub msg: String,
+    pub unsupported: bool,
+}
+
+impl EndError {
+    pub fn from_error(e: &anyhow::Error) -> Self {
+        EndError {
+            msg: format!("{e:#}"),
+            unsupported: super::is_unsupported(e),
+        }
+    }
+
+    pub fn transient(msg: String) -> Self {
+        EndError {
+            msg,
+            unsupported: false,
+        }
+    }
 }
 
 enum Cmd {
@@ -75,7 +99,7 @@ impl Capture {
             .name("sidecard-video".into())
             .spawn(move || {
                 let r = run(spec, make_sink, rx, &out);
-                let _ = out.blocking_send(Event::Ended(r.map_err(|e| format!("{e:#}"))));
+                let _ = out.blocking_send(Event::Ended(r.map_err(|e| EndError::from_error(&e))));
             })
             .context("starting the capture thread")?;
         Ok(Capture { cmd: tx })

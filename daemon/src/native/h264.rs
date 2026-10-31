@@ -201,6 +201,9 @@ pub struct StreamParams {
     /// Picture size (cropped); the coded size is rounded up to 16.
     pub width: u32,
     pub height: u32,
+    /// QP relative to the PPS's 26. 0 with rate control (the driver sets
+    /// the real QP); `qp - 26` for constant QP.
+    pub slice_qp_delta: i8,
 }
 
 impl StreamParams {
@@ -326,8 +329,8 @@ impl StreamParams {
     }
 
     /// Slice header for a whole-picture slice, up to (not including) the
-    /// slice data. QP is left at the PPS default (`slice_qp_delta = 0`): the
-    /// driver's rate control sets the real QP, as with GStreamer and FFmpeg.
+    /// slice data. With rate control `slice_qp_delta` is 0 and the driver
+    /// sets the real QP, as with GStreamer and FFmpeg.
     pub fn slice_header(&self, pic: &PicPlan) -> (Vec<u8>, usize) {
         let mut w = BitWriter::new();
         w.ue(0); // first_mb_in_slice
@@ -352,7 +355,7 @@ impl StreamParams {
         if self.profile.cabac() && !pic.idr {
             w.ue(0); // cabac_init_idc
         }
-        w.se(0); // slice_qp_delta
+        w.se(self.slice_qp_delta as i32);
         w.ue(0); // disable_deblocking_filter_idc
         w.se(0); // slice_alpha_c0_offset_div2
         w.se(0); // slice_beta_offset_div2
@@ -604,6 +607,7 @@ mod tests {
             level_idc: 51,
             width: 2360,
             height: 1640,
+            slice_qp_delta: 0,
         }
     }
 

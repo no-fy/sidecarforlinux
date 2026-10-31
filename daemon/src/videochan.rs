@@ -71,6 +71,8 @@ pub struct NativeSpec {
     pub max_fps: u32,
     pub kbps: u32,
     pub target_usage: u8,
+    /// Constant QP for the native encoder; 0 = CBR when available.
+    pub qp: u8,
     pub encoder: Encoder,
     pub kind: NativeKind,
 }
@@ -369,10 +371,11 @@ async fn produce_native(
     _: mpsc::Sender<Produced>,
     _: mpsc::UnboundedReceiver<()>,
 ) -> Result<()> {
-    bail!(
+    Err(anyhow::Error::new(crate::native::Unsupported(
         "this sidecard was built without native video (Linux, cargo feature native-video); \
          use [video] backend = \"gstreamer\""
-    )
+            .into(),
+    )))
 }
 
 #[cfg(all(feature = "native-video", target_os = "linux"))]
@@ -412,6 +415,7 @@ async fn produce_native(
                 kbps: spec.kbps,
                 fps: spec.fps.max(1),
                 target_usage: spec.target_usage,
+                qp: spec.qp,
             };
             Capture::spawn(
                 cap,
@@ -469,7 +473,11 @@ async fn produce_native(
                     }
                 }
                 Some(Event::Ended(Ok(()))) | None => return Ok(()),
-                Some(Event::Ended(Err(e))) => bail!("native video: {e}"),
+                Some(Event::Ended(Err(e))) if e.unsupported => {
+                    return Err(anyhow::Error::new(crate::native::Unsupported(e.msg))
+                        .context("native video"))
+                }
+                Some(Event::Ended(Err(e))) => bail!("native video: {}", e.msg),
             },
             Some(()) = keyframes.recv() => capture.request_keyframe(),
         }

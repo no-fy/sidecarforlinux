@@ -181,7 +181,8 @@ impl GstPipeSink {
                     }
                 };
                 if !stopping2.load(std::sync::atomic::Ordering::SeqCst) {
-                    let _ = out.blocking_send(Event::Ended(Err(why)));
+                    let _ =
+                        out.blocking_send(Event::Ended(Err(super::pw::EndError::transient(why))));
                 }
             })?;
         self.running = Some(Running {
