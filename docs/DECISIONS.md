@@ -223,7 +223,7 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - It draws into a `CAMetalLayer` with 2 drawables and `presentsWithTransaction = false`, and presents as soon as the GPU is done, with no display-link pacing. Only the newest decoded frame is drawn.
   - It reports `decoded_ns`, and the drawable's `presentedTime` as `displayed_ns`.
 - **Prior art:** OpenDisplay (GPL-3.0, so ideas only, no code read or copied; [prior-art.md](prior-art.md)) arrived at the same design independently. Its header suspects AVSampleBufferDisplayLayer of buffering about one extra frame and says moonlight-qt has a Metal path for the same reason. That's unverified; with Metal selected, the "decoded -> on screen" figure shows what an immediate present costs, and the felt A/B difference tells us about the layer.
-- **Default (since 2026-10-31): Metal.** In your A/B on an iPad Air M4 (iPadOS 27, USB) Metal **felt better** than AVSampleBufferDisplayLayer. That's your subjective verdict; AVSampleBufferDisplayLayer reports no display time, so there's no number to compare. AVSampleBufferDisplayLayer stays selectable as a fallback. Fresh installs start on Metal; existing installs keep the saved choice.
+- **Default from 2026-10-31 until D24: Metal.** In your A/B on an iPad Air M4 (iPadOS 27, USB) Metal **felt better** than AVSampleBufferDisplayLayer. That's your subjective verdict; AVSampleBufferDisplayLayer reports no display time, so there's no number to compare. AVSampleBufferDisplayLayer stays selectable as a fallback. Fresh installs start on Metal; existing installs keep the saved choice.
 - **Testability:** everything but the `UIView` (decoder, newest-frame slot, shader, renderer switch, feedback) lives in `SidecarNet` and runs in the macOS CI job.
 - **Undo:** delete the Metal view and the switch; the AVSampleBufferDisplayLayer path is unchanged except that it now waits for a keyframe after a switch.
 
@@ -282,7 +282,8 @@ Research notes with sources for everything below are in [`docs/research/`](resea
 - **Cost**
   - The default Linux build now needs **libclang** (bindgen) and the **libpipewire/libspa and libva headers**. On Arch that means the `clang`, `pipewire` and `libva` packages. `cargo build --no-default-features --features display` still builds without them, and macOS ignores the feature.
   - VA-API and KWin DMA-BUF can't run in the VM or on CI runners (no GPU), so the encoder is **built but untested** until you run it.
-- **Undo:** set `backend = "gstreamer"` (the default). The native code is behind the `native-video` cargo feature.
+- **Undo:** set `backend = "gstreamer"`. The native code is behind the `native-video` cargo feature.
+- **Default since 2026-10-31 (round 3): `native`**, when the build has it (else `gstreamer`). On your machine it captures at 121 frames/s with Y-tiled zero copy, our own part is ≈ 9 ms, and you found pencil apps other than Krita "like usable compared to before" with it. In Krita the numbers came out about equal, because Krita's own drawing time dominates there. The example config no longer sets `backend`, so the build decides.
 - **Status (your run, 2026-10-31, round 1): works on real hardware, slower than GStreamer.**
   - **Tested** on the Intel UHD 630 (iHD 26.3.5): H.264 High via EncSlice, packed headers accepted, KWin's DMA-BUF imported with no copy, 2360×1640 at level 5.1, and keyframe on request recovered a lost picture twice.
   - Slower than `gstreamer`: pen input → frame encoded ≈ 27–33 ms vs ≈ 10–11 ms. Stages: convert 5.4–6.9 ms, encode 6.0–6.8 ms, tick → sent ≈ 13.5 ms. KWin captured at **60** frames/s instead of the ~100 GStreamer got, because we capped the negotiated max framerate at `[video] fps`.
@@ -296,7 +297,7 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - constant QP when an encoder has no CBR (`[video] qp`);
   - `target_usage` mapped onto each driver's quality range (AMD has 32 levels; we sent 7, a slow high-quality preset);
   - configurations that can never work are reported once instead of retried forever.
-  - Default stays `gstreamer` until native is faster on your machine.
+  - Default stayed `gstreamer` until native was faster on your machine; it is the default since round 3 (above).
 - **HuC (optional, untested):** Intel's media-driver README says "HuC firmware is necessary for AVC/HEVC/VP9/AV1 low power encoding bitrate control, including CBR, VBR", and that on CFL (Coffee Lake, your UHD 630) HuC loading has been off by default since kernel 4.15: set `i915.enable_guc=2`. That is a kernel parameter (`options i915 enable_guc=2` in `/etc/modprobe.d/`, root) plus a reboot. Not needed: EncSlice has CBR, and LP now runs with constant QP.
 - **Details and sources:** [`research/native-video.md`](research/native-video.md).
 
@@ -329,3 +330,17 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - [loadVideoPerformanceMetrics](https://developer.apple.com/documentation/avfoundation/avsamplebuffervideorenderer/loadvideoperformancemetrics(completionhandler:)), [AVVideoPerformanceMetrics](https://developer.apple.com/documentation/avfoundation/avvideoperformancemetrics)
   - [Receiver](https://developer.apple.com/documentation/avfoundation/avsamplebuffervideorenderer/receiver)
 
+## D24. AVSampleBufferDisplayLayer is the iPad's default renderer again; clean screen
+
+- **Why:** your slow-motion video (2026-10-31, iPad Air M4, iPadOS 27) showed AVSampleBufferDisplayLayer **ahead of** Metal · display link. That's the only measurement of the glass we have, and it agrees with D23: practically every frame the layer shows skips the compositor ("optimized compositing"), while Metal's frames go through it.
+  - Your earlier "Metal felt better" (D20) came before these fixes, by feel only.
+- **Choice:**
+  - AVSampleBufferDisplayLayer is the default, and the choice is saved again under a new key (`videoRenderer`), so an older saved Metal choice doesn't carry over.
+  - Its timing (D23) is off by default, because it decodes every frame twice. It's a menu toggle (⚙︎ → Video renderer → Time AVSampleBufferDisplayLayer frames).
+  - Metal stays selectable.
+- **Clean screen** (⚙︎ → Clean screen while video is on, off by default, works with both renderers):
+  - while video is on, the labels, the ⚙︎ button, the teal hover ring and the local ink are hidden;
+  - a finger tap shows them for 6 s, and opening the menu restarts that.
+  - The idea: with nothing drawn over the video, iPadOS needn't composite it with other UI, which could save a refresh (≈ 17 ms), mostly for Metal.
+  - **Assumption, untested:** the layer's frames already skip the compositor with the overlays up, so the gain there may be nil. Judge by slow motion; with the layer's timing on, "optimized compositing" near the share of frames shown means nothing is left to gain.
+- **Undo:** select Metal in the menu; switch the clean screen off.

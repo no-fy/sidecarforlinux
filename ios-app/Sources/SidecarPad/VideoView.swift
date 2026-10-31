@@ -9,8 +9,8 @@ import UIKit
 /// display (phase 2). Frames go straight into an AVSampleBufferDisplayLayer
 /// marked "display immediately": no pacing, no extra buffering. They are
 /// enqueued by `sink` (SidecarNet's LayerVideoSink), on the network queue.
-/// While the view is visible, a display link asks the layer once per
-/// refresh what it shows, so the sink can time each frame.
+/// With `measure` on and the view visible, a display link asks the layer
+/// once per refresh what it shows, so the sink can time each frame.
 final class VideoView: UIView {
     override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
     private var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
@@ -35,12 +35,20 @@ final class VideoView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    /// ⚙︎ → Video renderer → "Time AVSampleBufferDisplayLayer frames".
+    var measure = false {
+        didSet { updateMeasuring() }
+    }
+
     override var isHidden: Bool {
-        didSet {
-            // Measure (and poll) only while this renderer is on screen.
-            sink?.setMeasuring(!isHidden)
-            poller?.setRunning(!isHidden)
-        }
+        didSet { updateMeasuring() }
+    }
+
+    /// Measure (and poll) only when asked and while this renderer is on screen.
+    private func updateMeasuring() {
+        let on = measure && !isHidden
+        sink?.setMeasuring(on)
+        poller?.setRunning(on)
     }
 }
 

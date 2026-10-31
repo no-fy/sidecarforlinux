@@ -189,13 +189,28 @@ enum Settings {
         get { UserDefaults.standard.object(forKey: "showInk") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "showInk") }
     }
-    /// Video renderer: Metal (true, the default since it felt better on
-    /// your iPad Air M4, DECISIONS D20) or AVSampleBufferDisplayLayer.
-    /// Not saved: every launch starts on Metal. The AVSampleBufferDisplayLayer
-    /// renderer is only there for comparison, and when its display timing
-    /// crashed the app (2026-10-31, fixed since) a saved choice would have
-    /// crashed every launch as soon as video started.
-    static var metalVideo = true
+    /// Video renderer: AVSampleBufferDisplayLayer (false, the default: your
+    /// slow-motion video showed it ahead of Metal on the iPad Air M4,
+    /// DECISIONS D24) or Metal (true). Saved under a new key, so the earlier
+    /// "metalVideo" choice doesn't carry over.
+    static var metalVideo: Bool {
+        get { UserDefaults.standard.string(forKey: "videoRenderer") == "metal" }
+        set { UserDefaults.standard.set(newValue ? "metal" : "layer", forKey: "videoRenderer") }
+    }
+    /// Time the AVSampleBufferDisplayLayer renderer's frames (D23). Off by
+    /// default: it decodes every frame a second time and copies the shown
+    /// picture at every refresh.
+    static var measureLayer: Bool {
+        get { UserDefaults.standard.bool(forKey: "measureLayer") }
+        set { UserDefaults.standard.set(newValue, forKey: "measureLayer") }
+    }
+    /// While video is on, hide everything drawn over it (labels, ⚙︎, hover
+    /// ring, local ink) so iPadOS has nothing to blend with the video
+    /// (D24). A finger tap shows the ⚙︎ for a few seconds.
+    static var cleanScreen: Bool {
+        get { UserDefaults.standard.bool(forKey: "cleanScreen") }
+        set { UserDefaults.standard.set(newValue, forKey: "cleanScreen") }
+    }
     /// How the Metal renderer hands frames to the screen (DECISIONS D21).
     /// The mode restored at launch. Never the experimental UI update link:
     /// a bug in that mode (fixed since) crashed the app as soon as video
@@ -229,6 +244,9 @@ final class RootViewController: UIViewController {
     private let menuButton = UIButton(type: .system)
     private var fingerprint = ""
     private var lastSurface: SurfaceInfo?
+    /// Clean screen: the overlays are shown for a moment after a finger tap.
+    private var peeking = false
+    private var peekEnd: DispatchWorkItem?
 
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
@@ -252,10 +270,17 @@ final class RootViewController: UIViewController {
             self.videoStatsLabel.text = text
         }
         metalVideo.setPresentMode(Settings.metalPresent)
+        video.measure = Settings.measureLayer
         capture.translatesAutoresizingMaskIntoConstraints = false
         capture.sendPredicted = Settings.sendPredicted
         capture.showInk = Settings.showInk
         view.addSubview(capture)
+        // Fingers don't draw (the pencil does), so a finger tap can bring
+        // the ⚙︎ back on a clean screen.
+        let tap = UITapGestureRecognizer(target: self, action: #selector(fingerTapped))
+        tap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        tap.cancelsTouchesInView = false
+        capture.addGestureRecognizer(tap)
 
         for l in [statusLabel, latencyLabel, videoStatsLabel, gestureLabel] {
             l.translatesAutoresizingMaskIntoConstraints = false
@@ -273,6 +298,8 @@ final class RootViewController: UIViewController {
         menuButton.configuration = cfg
         menuButton.translatesAutoresizingMaskIntoConstraints = false
         menuButton.showsMenuAsPrimaryAction = true
+        // Opening the menu keeps a clean screen's ⚙︎ visible a while longer.
+        menuButton.addAction(UIAction { [weak self] _ in self?.peek() }, for: .menuActionTriggered)
         view.addSubview(menuButton)
         rebuildMenu()
 
@@ -342,7 +369,37 @@ final class RootViewController: UIViewController {
         video.isHidden = !(videoOn && !Settings.metalVideo)
         metalVideo.isHidden = !(videoOn && Settings.metalVideo)
         videoStatsLabel.text = nil  // the active renderer's readout follows within a second
+        updateOverlays()
         rebuildMenu()
+    }
+
+    /// Clean screen: nothing over the video unless a finger tap asked for it.
+    func updateOverlays() {
+        let clean = Settings.cleanScreen && videoOn
+        for v in [statusLabel, latencyLabel, videoStatsLabel, gestureLabel, menuButton] as [UIView] {
+            v.isHidden = clean && !peeking
+        }
+        capture.showsHoverCursor = !clean
+        capture.showInk = Settings.showInk && !clean
+    }
+
+    @objc private func fingerTapped() {
+        guard Settings.cleanScreen && videoOn else { return }
+        peek()
+    }
+
+    /// Shows the overlays for 6 s (restarted by each tap or menu use).
+    private func peek() {
+        guard Settings.cleanScreen && videoOn else { return }
+        peeking = true
+        peekEnd?.cancel()
+        let end = DispatchWorkItem { [weak self] in
+            self?.peeking = false
+            self?.updateOverlays()
+        }
+        peekEnd = end
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: end)
+        updateOverlays()
     }
 
     func setLatency(_ text: String) {
@@ -384,10 +441,23 @@ final class RootViewController: UIViewController {
         let ink = UIAction(title: "Show local ink", image: UIImage(systemName: "scribble"),
                            state: Settings.showInk ? .on : .off) { [weak self] _ in
             Settings.showInk.toggle()
-            self?.capture.showInk = Settings.showInk
+            self?.updateOverlays()
             self?.rebuildMenu()
         }
-        var renderers: [UIAction] = MetalPresentMode.allCases.map { mode in
+        let clean = UIAction(title: "Clean screen while video is on", subtitle: "tap with a finger to show ⚙︎",
+                             image: UIImage(systemName: "rectangle.dashed"),
+                             state: Settings.cleanScreen ? .on : .off) { [weak self] _ in
+            Settings.cleanScreen.toggle()
+            self?.peek()
+            self?.updateOverlays()
+            self?.rebuildMenu()
+        }
+        var renderers: [UIMenuElement] = [
+            UIAction(title: "AVSampleBufferDisplayLayer (fastest)", state: Settings.metalVideo ? .off : .on) {
+                [weak self] _ in self?.controller?.setRenderer(metal: false, present: nil)
+            },
+        ]
+        renderers += MetalPresentMode.allCases.map { mode -> UIMenuElement in
             let title: String
             switch mode {
             case .displayLink: title = "Metal · display link"
@@ -403,10 +473,13 @@ final class RootViewController: UIViewController {
                 self?.controller?.setRenderer(metal: true, present: mode)
             }
         }
-        renderers.append(UIAction(title: "AVSampleBufferDisplayLayer (for comparison, not saved)",
-                                  state: Settings.metalVideo ? .off : .on) {
-            [weak self] _ in self?.controller?.setRenderer(metal: false, present: nil)
-        })
+        let measure = UIAction(title: "Time AVSampleBufferDisplayLayer frames", subtitle: "decodes every frame twice",
+                               state: Settings.measureLayer ? .on : .off) { [weak self] _ in
+            Settings.measureLayer.toggle()
+            self?.video.measure = Settings.measureLayer
+            self?.rebuildMenu()
+        }
+        renderers.append(UIMenu(options: .displayInline, children: [measure]))
         let renderer = UIMenu(title: "Video renderer",
                               subtitle: Settings.metalVideo ? "Metal · \(Settings.currentPresent.label)" : "AVSampleBufferDisplayLayer",
                               image: UIImage(systemName: "display"), children: renderers)
@@ -420,7 +493,7 @@ final class RootViewController: UIViewController {
                           image: UIImage(systemName: "checkmark.shield"), attributes: .disabled) { _ in }
         menuButton.menu = UIMenu(children: [
             UIMenu(options: .displayInline, children: [wifi, pairWifi]),
-            UIMenu(options: .displayInline, children: [predicted, ink, renderer]),
+            UIMenu(options: .displayInline, children: [predicted, ink, clean, renderer]),
             UIMenu(options: .displayInline, children: [fp, forget, reset]),
         ])
     }

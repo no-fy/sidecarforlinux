@@ -24,6 +24,10 @@ final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
         // Drop the last stroke, or `end()` would flash it again later.
         didSet { if !showInk { ink.clear() } }
     }
+    /// The teal hover ring. Off on a clean screen (the PC draws its own cursor).
+    var showsHoverCursor = true {
+        didSet { if !showsHoverCursor { cursor.isHidden = true } }
+    }
 
     private var seq: UInt32 = 0
     private var touching = false
@@ -190,7 +194,7 @@ final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
             )
             emit([s])
             lastLocation = loc
-            cursor.isHidden = false
+            cursor.isHidden = !showsHoverCursor
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             cursor.position = loc

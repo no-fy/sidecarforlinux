@@ -399,7 +399,9 @@ What to look for:
 
 The stage table is in [latency.md → Where the PC's time goes](latency.md#where-the-pcs-time-goes-native-backend).
 
-## 16. Second-screen lag, round 3: timing AVSampleBufferDisplayLayer (5 min) → **paste back**
+## 16. Second-screen lag, round 3: timing AVSampleBufferDisplayLayer (5 min) → **done 2026-10-31**
+
+> **Result (your run):** the first build crashed (the layer's picture is compressed, `&8v0`); fixed. The figure, 6–9 ms received → "on screen", is when the layer switched pictures, not the glass (D23). Optimized compositing ≈ every frame shown. Your slow-motion video: AVSampleBufferDisplayLayer is faster. It is the default again (D24, §17).
 
 The AVSampleBufferDisplayLayer renderer now reports when each frame reached the screen (±1 refresh), so it can be compared with Metal's display link (≈ 36–39 ms in round 2).
 
@@ -413,6 +415,29 @@ The AVSampleBufferDisplayLayer renderer now reports when each frame reached the 
 If the readout says `not measurable`, send it anyway: it says whether the layer gave no picture or gave one that couldn't be read.
 
 > The first build of this crashed the app as soon as you picked AVSampleBufferDisplayLayer (it read the layer's compressed picture as if it were plain). Fixed: reinstall the nightly with `scripts/resign-ipad.sh`. The renderer choice is no longer saved, so every launch starts on Metal.
+
+
+## 17. Defaults: native on the PC, AVSampleBufferDisplayLayer on the iPad; try the clean screen (10 min)
+
+1. **Update both sides:**
+
+   ```bash
+   git switch main && git pull && scripts/install-daemon.sh
+   scripts/resign-ipad.sh    # iPad plugged in; the nightly from today's main
+   ```
+
+2. **PC:** native is now the default backend. If `~/.config/sidecarforlinux/config.toml` has a `backend = "gstreamer"` line (the old example config had one), delete it or change it to `backend = "native"`:
+
+   ```bash
+   grep -n '^backend' ~/.config/sidecarforlinux/config.toml
+   ```
+
+3. **iPad:** the app starts on **AVSampleBufferDisplayLayer** (⚙︎ → Video renderer shows it ticked).
+4. **Clean screen:** ⚙︎ → **Clean screen while video is on**. Everything drawn over the video disappears after 6 s. A **finger** tap brings the ⚙︎ back for 6 s. Compare with it off, in slow motion, for both renderers:
+   - AVSampleBufferDisplayLayer: clean vs not;
+   - Metal · display link: clean vs not.
+   Tell me which of the four is fastest. If the clean screen gains nothing, switch it off again.
+5. **Optional, 240 Hz:** a 2360×1640 custom mode at 240000 mHz on Virtual-ipad, the same way you made the 120 one. With `sidecard run --video virtual`, check the `video stages` line: `peak` near 240, `stale buffers skipped` 0, `encode` p95 under ~4 ms. If they don't hold, go back to 120.
 
 ---
 
