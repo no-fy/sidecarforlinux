@@ -34,7 +34,7 @@ Machine, from `scripts/doctor.sh` on 2026-10-30: **MacBook Pro 16" 2019 (MacBook
 
 ## Phase 2 (virtual display)
 
-`[video] backend` picks who captures and encodes (DECISIONS D18, D21):
+`[video] backend` picks who captures and encodes (DECISIONS D18, D22):
 
 | Package (Arch) | Needed for | Why |
 |---|---|---|
@@ -56,7 +56,7 @@ The `native-video` cargo feature (on by default, Linux only) links libpipewire a
 
 `scripts/setup-system.sh` installs them (it shows its plan and asks before sudo). `scripts/install-daemon.sh` checks for them and, if something is missing, says what and builds without the native backend instead (`--no-default-features --features display`). macOS builds (the interop tests) ignore the feature.
 
-Licences: libpipewire/libspa are MIT (some PipeWire plugins it may load are LGPL-2.1+, dynamically); libva is MIT; the `pipewire` crate is MIT; bindgen (BSD-3) only runs at build time. No GPL code is linked: Arch's FFmpeg is a GPLv3 build, which is one reason it isn't used (D21).
+Licences: libpipewire/libspa are MIT (some PipeWire plugins it may load are LGPL-2.1+, dynamically); libva is MIT; the `pipewire` crate is MIT; bindgen (BSD-3) only runs at build time. No GPL code is linked: Arch's FFmpeg is a GPLv3 build, which is one reason it isn't used (D22).
 
 Runtime: PipeWire ≥ 1.0 (the `pipewire` crate's `v1_0_0` API level).
 

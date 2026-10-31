@@ -4,7 +4,7 @@
 //!
 //! Encoders: a `gst-launch-1.0` subprocess writing H.264 Annex-B to stdout
 //! (`[video] backend = "gstreamer"`, DECISIONS D18), or capture and encode
-//! inside the daemon (`"native"` / `"hybrid"`, D21, `native/`). See
+//! inside the daemon (`"native"` / `"hybrid"`, D22, `native/`). See
 //! docs/phase2-virtual-display.md.
 
 use crate::clock::now_ns;
