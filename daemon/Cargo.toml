@@ -37,7 +37,7 @@ evdev = "0.13"
 # Native capture (PipeWire consumer). libpipewire is LGPL-2.1, linked
 # dynamically; the bindings are MIT. Builds need libpipewire/libspa headers
 # and libclang (bindgen). See docs/dependencies.md.
-pipewire = { version = "0.10", optional = true }
+pipewire = { version = "0.10", optional = true, features = ["v1_0_0"] }
 
 [features]
 default = ["display", "native-video"]

@@ -23,14 +23,26 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq evtest libinput-tools gstreamer1.0-tools gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
-            libclang-dev libpipewire-0.3-dev libspa-0.2-dev libva-dev pkg-config ffmpeg
+            libclang-dev libpipewire-0.3-dev libspa-0.2-dev libva-dev pkg-config ffmpeg \
+            pipewire pipewire-bin wireplumber gstreamer1.0-pipewire
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Start PipeWire + WirePlumber (native capture tests; no GPU, shared memory only)
+        run: |
+          XDG_RUNTIME_DIR=$(mktemp -d)
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR
+          pipewire > "$XDG_RUNTIME_DIR/pipewire.log" 2>&1 &
+          sleep 1
+          wireplumber > "$XDG_RUNTIME_DIR/wireplumber.log" 2>&1 &
+          sleep 2
+          pw-cli info 0 | head -4
       - name: Unit + end-to-end tests (fake iPad over TLS, no uinput)
         env:
           SIDECAR_REQUIRE_FFMPEG: "1"
+          SIDECAR_PIPEWIRE_TEST: "1"
         run: cargo test --workspace
       - name: Build release
         run: cargo build --release -p sidecard
@@ -63,6 +75,24 @@ jobs:
           sleep 1
           cat out/video-fake.txt | grep -o 'video=.*'
           grep -Eq 'video=VideoRx \{ connections: 1, configs: [1-9][0-9]*, frames: [1-9][0-9]*' out/video-fake.txt
+      - name: Native capture (hybrid backend) of a synthetic PipeWire node -> fake iPad
+        run: |
+          export SIDECAR_CONFIG_DIR=$PWD/out/pc
+          printf '[video]\nencoder = "x264"\nbitrate_kbps = 4000\nfps = 30\n' > out/pc/config.toml
+          gst-launch-1.0 -q videotestsrc is-live=true pattern=ball \
+            ! video/x-raw,format=BGRx,width=640,height=480,framerate=30/1 \
+            ! pipewiresink mode=provide "stream-properties=props,media.class=Video/Source,node.name=ci-synthetic" &
+          sleep 2
+          ./target/release/sidecard fake-ipad --listen 127.0.0.1:47811 --state-dir out/fake --speed 0.12 > out/hybrid-fake.txt 2>&1 &
+          sleep 1
+          timeout 90 ./target/release/sidecard run --once --dry-run --connect 127.0.0.1:47811 \
+            --video pipewire:ci-synthetic --video-backend hybrid > out/hybrid-run.txt 2>&1 || true
+          sleep 1
+          grep -E "PipeWire format|video stages" out/hybrid-run.txt || true
+          grep -o 'video=.*' out/hybrid-fake.txt
+          grep -q "PipeWire format: XR24 640x480" out/hybrid-run.txt
+          grep -q "video stages p50/p95" out/hybrid-run.txt
+          grep -Eq 'video=VideoRx \{ connections: 1, configs: [1-9][0-9]*, frames: [1-9][0-9]*' out/hybrid-fake.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:

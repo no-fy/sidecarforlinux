@@ -263,6 +263,30 @@ impl InputProbe {
         }
         Some(t - m).filter(|d| *d <= Self::MAX_NS)
     }
+
+    /// Like `on_frame`, for sources that know when the compositor captured
+    /// the frame (`tick`). A frame captured before the marked input can't
+    /// show it, so it doesn't consume the marker. Returns (input -> tick,
+    /// input -> encoded).
+    pub fn on_frame_split(&self, tick: Option<u64>, t: u64) -> Option<(Option<u64>, u64)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(tick) = tick else {
+            return self.on_frame(t).map(|d| (None, d));
+        };
+        self.last_frame_ns.store(t, Relaxed);
+        let m = self.marker_ns.load(Relaxed);
+        if m == 0 || tick < m {
+            return None;
+        }
+        if self
+            .marker_ns
+            .compare_exchange(m, 0, Relaxed, Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        Some((Some(tick - m), t - m)).filter(|(_, d)| *d <= Self::MAX_NS)
+    }
 }
 
 #[cfg(test)]
@@ -281,6 +305,24 @@ mod input_probe_tests {
         // Frames keep coming while moving: input right after a frame isn't marked.
         p.on_input(1345 * MS);
         assert_eq!(p.on_frame(1357 * MS), None);
+    }
+
+    #[test]
+    fn split_probe_waits_for_a_frame_captured_after_the_input() {
+        let p = InputProbe::default();
+        p.on_frame_split(Some(990 * MS), 1000 * MS);
+        p.on_input(1300 * MS);
+        // Captured at 1295 (before the input), encoded at 1310: not the answer.
+        assert_eq!(p.on_frame_split(Some(1295 * MS), 1310 * MS), None);
+        // Captured at 1316, encoded at 1322.
+        assert_eq!(
+            p.on_frame_split(Some(1316 * MS), 1322 * MS),
+            Some((Some(16 * MS), 22 * MS))
+        );
+        assert_eq!(p.on_frame_split(Some(1332 * MS), 1338 * MS), None);
+        // Without a tick it behaves like on_frame.
+        p.on_input(1600 * MS);
+        assert_eq!(p.on_frame_split(None, 1640 * MS), Some((None, 40 * MS)));
     }
 
     #[test]

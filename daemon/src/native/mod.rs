@@ -7,3 +7,10 @@ pub mod frame;
 pub mod h264;
 pub mod latest;
 pub mod stats;
+
+#[cfg(all(feature = "native-video", target_os = "linux"))]
+pub mod encoder;
+#[cfg(all(feature = "native-video", target_os = "linux"))]
+pub mod hybrid;
+#[cfg(all(feature = "native-video", target_os = "linux"))]
+pub mod pw;

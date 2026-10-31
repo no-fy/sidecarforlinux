@@ -48,9 +48,13 @@ struct ConnArgs {
     #[arg(long)]
     dry_run: bool,
     /// Phase 2 (experimental) video: off | virtual | test-pattern | file:PATH
-    /// (default: [video] mode in config.toml).
+    /// | pipewire:NODE (default: [video] mode in config.toml).
     #[arg(long)]
     video: Option<String>,
+    /// Video capture/encode backend: gstreamer | native | hybrid (default:
+    /// [video] backend in config.toml).
+    #[arg(long, value_parser = ["gstreamer", "native", "hybrid"])]
+    video_backend: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -332,6 +336,8 @@ fn session_ctx(env: &Env, pairing: PairingMode, dry_run: bool) -> Result<Session
 #[derive(Clone)]
 struct VideoPlan {
     mode: String,
+    backend: String,
+    va_device: Option<PathBuf>,
     encoder: videochan::Encoder,
     kbps: u32,
     fps: u32,
@@ -341,12 +347,50 @@ struct VideoPlan {
 }
 
 impl VideoPlan {
+    /// Capture PipeWire node `target` with the configured backend.
+    fn pipewire_source(&self, target: &str, w: u32, h: u32) -> videochan::VideoSource {
+        use videochan::{NativeKind, NativeSpec, VideoSource};
+        let kind = match self.backend.as_str() {
+            "native" => NativeKind::Va {
+                device: self.va_device.clone(),
+            },
+            "hybrid" => NativeKind::Hybrid,
+            _ => {
+                return videochan::pipewire(
+                    target,
+                    w,
+                    h,
+                    self.fps,
+                    self.encoder,
+                    self.kbps,
+                    self.target_usage,
+                )
+            }
+        };
+        VideoSource::Native(NativeSpec {
+            target: target.to_string(),
+            width: w,
+            height: h,
+            fps: self.fps,
+            kbps: self.kbps,
+            target_usage: self.target_usage,
+            encoder: self.encoder,
+            kind,
+        })
+    }
+
     fn from(env: &Env, a: &ConnArgs) -> VideoPlan {
         VideoPlan {
             mode: a
                 .video
                 .clone()
                 .unwrap_or_else(|| env.cfg.video.mode.clone()),
+            backend: a
+                .video_backend
+                .clone()
+                .unwrap_or_else(|| env.cfg.video.backend.clone()),
+            va_device: (!env.cfg.video.va_device.is_empty())
+                .then(|| PathBuf::from(&env.cfg.video.va_device)),
             encoder: match env.cfg.video.encoder.as_str() {
                 "x264" => videochan::Encoder::X264,
                 "vaapi-lp" => videochan::Encoder::VaapiLowPower,
@@ -459,16 +503,9 @@ async fn run_video_plan(
                     tracing::warn!("could not map the pen to {out_name}: {e:#}");
                 }
             }
-            videochan::pipewire(
-                node,
-                w,
-                h,
-                plan.fps,
-                plan.encoder,
-                plan.kbps,
-                plan.target_usage,
-            )
+            plan.pipewire_source(&node.to_string(), w, h)
         }
+        m if m.starts_with("pipewire:") => plan.pipewire_source(&m[9..], w, h),
         m => bail!("unsupported video mode {m:?}"),
     };
     let video = async {

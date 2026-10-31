@@ -74,7 +74,9 @@ pub enum Converted {
 #[derive(Debug)]
 pub struct Encoded {
     pub annexb: Vec<u8>,
-    pub keyframe: bool,
+    /// The picture size that was encoded (the iPad gets it in VideoConfig).
+    pub width: u32,
+    pub height: u32,
     pub times: StageTimes,
 }
 
@@ -99,12 +101,12 @@ pub trait FrameSink {
 /// items were skipped.
 pub fn newest_usable<T>(
     items: impl Iterator<Item = T>,
-    usable: impl Fn(&T) -> bool,
+    mut usable: impl FnMut(&mut T) -> bool,
 ) -> (Option<T>, u32) {
     let mut best = None;
     let mut skipped = 0;
-    for it in items {
-        if usable(&it) && best.replace(it).is_some() {
+    for mut it in items {
+        if usable(&mut it) && best.replace(it).is_some() {
             skipped += 1;
         }
     }
@@ -162,10 +164,10 @@ mod tests {
     fn newest_usable_skips_old_and_corrupted() {
         // (seq, corrupted)
         let q = vec![(1, false), (2, false), (3, true), (4, false), (5, true)];
-        let (best, skipped) = newest_usable(q.into_iter(), |b| !b.1);
+        let (best, skipped) = newest_usable(q.into_iter(), |b: &mut (i32, bool)| !b.1);
         assert_eq!(best, Some((4, false)));
         assert_eq!(skipped, 2);
-        let (none, n) = newest_usable(vec![(1, true)].into_iter(), |b: &(i32, bool)| !b.1);
+        let (none, n) = newest_usable(vec![(1, true)].into_iter(), |b: &mut (i32, bool)| !b.1);
         assert_eq!((none, n), (None, 0));
     }
 
