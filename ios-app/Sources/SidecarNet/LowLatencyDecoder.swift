@@ -154,26 +154,37 @@ public final class LowLatencyDecoder: @unchecked Sendable {
         guard let sample = try? format.sampleBuffer(frame, displayImmediately: false) else { return failed() }
 
         let once = Once()
-        let gen = currentGeneration
         let onFrame = self.onFrame
         let id = frame.frameID
-        let status = VTDecompressionSessionDecodeFrame(
-            session, sampleBuffer: sample, flags: [._EnableAsynchronousDecompression], infoFlagsOut: nil
-        ) { [weak self] st, info, image, _, _ in
-            let now = SessionClock.nowNs()
-            guard st == noErr, let image, !info.contains(.frameDropped) else {
-                if st == kVTInvalidSessionErr { self?.markBroken() }
-                once.run(failed)
-                return
+        func submit(_ s: VTDecompressionSession) -> OSStatus {
+            let gen = currentGeneration
+            return VTDecompressionSessionDecodeFrame(
+                s, sampleBuffer: sample, flags: [._EnableAsynchronousDecompression], infoFlagsOut: nil
+            ) { [weak self] st, info, image, _, _ in
+                let now = SessionClock.nowNs()
+                guard st == noErr, let image, !info.contains(.frameDropped) else {
+                    if st == kVTInvalidSessionErr { self?.markBroken() }
+                    once.run(failed)
+                    return
+                }
+                guard let self, self.currentGeneration == gen else {
+                    once.run(failed)  // decoded for a session that was replaced meanwhile
+                    return
+                }
+                once.run {
+                    onFrame(DecodedVideoFrame(frameID: id, receivedNs: receivedNs, decodedNs: now, image: image,
+                                              report: report))
+                }
             }
-            guard let self, self.currentGeneration == gen else {
-                once.run(failed)  // decoded for a session that was replaced meanwhile
-                return
-            }
-            once.run {
-                onFrame(DecodedVideoFrame(frameID: id, receivedNs: receivedNs, decodedNs: now, image: image,
-                                          report: report))
-            }
+        }
+        var status = submit(session)
+        if status == kVTInvalidSessionErr, frame.keyframe, (try? makeSession()) != nil, let fresh = self.session {
+            // iOS invalidates sessions while the app is in the background.
+            // A keyframe can start a new one right away (as WebRTC does).
+            lock.lock()
+            needKeyframe = false
+            lock.unlock()
+            status = submit(fresh)
         }
         if status != noErr {
             if status == kVTInvalidSessionErr { markBroken() }
