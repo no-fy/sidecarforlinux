@@ -80,7 +80,8 @@ target_usage = 7
 qp = 0
 # Pixel density of the virtual monitor. 0 = the iPad's own (2 = sharp). Lower
 # (e.g. 1.5) means fewer pixels to render, encode and decode: less latency,
-# softer picture.
+# softer picture. Clashes with a custom display mode saved for Virtual-ipad
+# at the full size (the picture lands in a corner; README troubleshooting).
 scale = 0.0
 bitrate_kbps = 20000
 # gstreamer/hybrid backends: the encoder's frame rate (keyframe interval,

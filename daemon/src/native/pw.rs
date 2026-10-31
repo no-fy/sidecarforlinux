@@ -453,6 +453,17 @@ fn on_format(st: &mut State, pod: &Pod) -> Result<Option<Vec<Vec<u8>>>> {
             None => "shared memory (CPU copy)".to_string(),
         }
     );
+    // A different size than asked for: on the virtual monitor that means
+    // KWin applied a saved mode (e.g. a custom 2360x1640@120 while [video]
+    // scale asked for 1770x1230), and the picture can end up in a corner.
+    let desc = if (fmt.width, fmt.height) != (st.spec.width, st.spec.height) {
+        format!(
+            "{desc}; not the {}x{} asked for (a saved display mode on this monitor? README troubleshooting)",
+            st.spec.width, st.spec.height
+        )
+    } else {
+        desc
+    };
     let _ = st.out.try_send(Event::Format(desc));
     st.fmt = Some(fmt);
     st.sink.buffers_changed();
