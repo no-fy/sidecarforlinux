@@ -68,7 +68,13 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
     func setRenderer(metal: Bool, present: MetalPresentMode?) {
         Settings.metalVideo = metal
         if let present {
-            Settings.metalPresent = present
+            if present == .uiUpdate {
+                // Experimental: this session only, so a crash can't stick.
+                Settings.sessionPresent = present
+            } else {
+                Settings.sessionPresent = nil
+                Settings.metalPresent = present
+            }
             root.metalVideo.setPresentMode(present)
         }
         videoSwitch?.select(metal ? 1 : 0)
@@ -190,19 +196,22 @@ enum Settings {
         set { UserDefaults.standard.set(newValue, forKey: "metalVideo") }
     }
     /// How the Metal renderer hands frames to the screen (DECISIONS D21).
+    /// The mode restored at launch. Never the experimental UI update link:
+    /// a bug in that mode (fixed since) crashed the app as soon as video
+    /// started, and because the choice was saved, every launch crashed before
+    /// the menu could be reached (iPad Air M4 / iPadOS 27, 2026-10-31).
     static var metalPresent: MetalPresentMode {
         get {
             let saved = UserDefaults.standard.string(forKey: "metalPresent").flatMap(MetalPresentMode.init(rawValue:))
-            // The UI-update-link mode crashed the app at launch on the user's
-            // iPad Air M4 / iPadOS 27 (2026-10-31). The choice is saved, so the
-            // app crashed on every launch before the menu could be reached.
-            // Disabled until a crash log shows the cause; a saved value falls
-            // back to the display link.
             guard let saved, saved != .uiUpdate else { return .displayLink }
             return saved
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "metalPresent") }
     }
+    /// An experimental mode chosen for this session only (not saved).
+    static var sessionPresent: MetalPresentMode?
+    /// What the Metal renderer uses right now.
+    static var currentPresent: MetalPresentMode { sessionPresent ?? metalPresent }
 }
 
 final class RootViewController: UIViewController {
@@ -377,15 +386,14 @@ final class RootViewController: UIViewController {
             let title: String
             switch mode {
             case .displayLink: title = "Metal · display link"
-            case .uiUpdate: title = "Metal · UI update link (disabled: crashed)"
+            case .uiUpdate: title = "Metal · UI update link (iOS 18+, experimental, not saved)"
             case .immediate: title = "Metal · present at once (round 1)"
             }
             var attributes: UIMenuElement.Attributes = []
             if mode == .uiUpdate {
-                // See Settings.metalPresent: crashed at launch, disabled for now.
-                attributes = .disabled
+                if #available(iOS 18.0, *) {} else { attributes = .disabled }
             }
-            let on = Settings.metalVideo && Settings.metalPresent == mode
+            let on = Settings.metalVideo && Settings.currentPresent == mode
             return UIAction(title: title, attributes: attributes, state: on ? .on : .off) { [weak self] _ in
                 self?.controller?.setRenderer(metal: true, present: mode)
             }
@@ -394,7 +402,7 @@ final class RootViewController: UIViewController {
             [weak self] _ in self?.controller?.setRenderer(metal: false, present: nil)
         })
         let renderer = UIMenu(title: "Video renderer",
-                              subtitle: Settings.metalVideo ? "Metal · \(Settings.metalPresent.label)" : "AVSampleBufferDisplayLayer",
+                              subtitle: Settings.metalVideo ? "Metal · \(Settings.currentPresent.label)" : "AVSampleBufferDisplayLayer",
                               image: UIImage(systemName: "display"), children: renderers)
         let forget = UIAction(title: "Forget paired PCs", image: UIImage(systemName: "trash"),
                               attributes: .destructive) { [weak self] _ in self?.controller?.forgetPCs() }

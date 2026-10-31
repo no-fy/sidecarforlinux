@@ -53,9 +53,7 @@ final class MetalVideoView: UIView {
     /// The UI-update-link mode needs iOS 18; older systems get the display link.
     func setPresentMode(_ requested: MetalPresentMode) {
         var mode = requested
-        // The UI-update-link mode crashed at launch on a real iPad (see
-        // Settings.metalPresent); never start it until that's understood.
-        if mode == .uiUpdate { mode = .displayLink }
+        if #available(iOS 18.0, *) {} else if mode == .uiUpdate { mode = .displayLink }
         sink.setMode(mode)
         refreshUpdateLink()
     }
@@ -75,14 +73,18 @@ final class MetalVideoView: UIView {
         let wanted = sink.mode == .uiUpdate && !isHidden
         if wanted && updateLink == nil {
             let link = UIUpdateLink(view: self)
-            // A UI update every refresh while the video is up, not only on input.
-            link.requiresContinuousUpdates = true
-            // "presents one frame duration sooner" (UIUpdateLink docs).
-            link.wantsImmediatePresentation = true
+            // The action must come first: UIKit traps ("UIUpdateLink without
+            // associated phase actions can't request continuous updates") if
+            // continuous updates are requested before any action exists. That
+            // crashed the app on the user's iPad (crash logs 2026-10-31).
             link.addAction(to: .beforeCATransactionCommit) { [weak self] _, info in
                 self?.sink.presentForUIUpdate(target: info.estimatedPresentationTime,
                                               immediateExpected: info.isImmediatePresentationExpected)
             }
+            // "presents one frame duration sooner" (UIUpdateLink docs).
+            link.wantsImmediatePresentation = true
+            // A UI update every refresh while the video is up, not only on input.
+            link.requiresContinuousUpdates = true
             updateLink = link
         }
         (updateLink as? UIUpdateLink)?.isEnabled = wanted
