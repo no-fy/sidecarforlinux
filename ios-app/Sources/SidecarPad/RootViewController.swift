@@ -222,7 +222,7 @@ final class RootViewController: UIViewController {
     private var videoOn = false
     private let statusLabel = UILabel()
     private let latencyLabel = UILabel()
-    /// The Metal renderer's own readout (decoded → screen), once a second.
+    /// The active renderer's own readout (decoded or received → screen), once a second.
     private let videoStatsLabel = UILabel()
     private let gestureLabel = UILabel()
     private let menuButton = UIButton(type: .system)
@@ -244,6 +244,10 @@ final class RootViewController: UIViewController {
         metalVideo.onError = { [weak self] message in self?.setStatus("Metal video: \(message)", ok: false) }
         metalVideo.onStats = { [weak self] text in
             guard let self, self.videoOn, Settings.metalVideo else { return }
+            self.videoStatsLabel.text = text
+        }
+        video.onStats = { [weak self] text in
+            guard let self, self.videoOn, !Settings.metalVideo else { return }
             self.videoStatsLabel.text = text
         }
         metalVideo.setPresentMode(Settings.metalPresent)
@@ -336,7 +340,7 @@ final class RootViewController: UIViewController {
     func updateVideoViews() {
         video.isHidden = !(videoOn && !Settings.metalVideo)
         metalVideo.isHidden = !(videoOn && Settings.metalVideo)
-        if !videoOn || !Settings.metalVideo { videoStatsLabel.text = nil }
+        videoStatsLabel.text = nil  // the active renderer's readout follows within a second
         rebuildMenu()
     }
 
