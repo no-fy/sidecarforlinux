@@ -44,12 +44,13 @@ default = ["display", "native-video"]
 display = ["dep:wayland-client", "dep:wayland-protocols-plasma"]
 # In-process capture + VA-API encode ([video] backend = "native"). Linux only:
 # on other systems the feature compiles to nothing.
-native-video = ["dep:pipewire", "dep:bindgen"]
+native-video = ["dep:pipewire", "dep:bindgen", "dep:pkg-config"]
 
 [build-dependencies]
 # libva bindings for the native encoder, generated at build time (needs
 # libclang and the libva headers); only used on Linux with native-video.
 bindgen = { version = "0.72", optional = true }
+pkg-config = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

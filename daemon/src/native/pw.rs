@@ -400,6 +400,7 @@ fn on_format(st: &mut State, pod: &Pod) -> Result<Option<Vec<Vec<u8>>>> {
     );
     let _ = st.out.try_send(Event::Format(desc));
     st.fmt = Some(fmt);
+    st.sink.buffers_changed();
     Ok(Some(buffer_params(fmt.modifier.is_some())?))
 }
 
