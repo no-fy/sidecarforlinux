@@ -79,6 +79,22 @@ impl FrameSink for TestSink {
     }
 }
 
+/// Nodes and links, for failure messages (is the session manager linking?).
+fn pw_state() -> String {
+    let run = |cmd: &str, args: &[&str]| {
+        Command::new(cmd)
+            .args(args)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_else(|e| format!("{cmd}: {e}"))
+    };
+    format!(
+        "pw-cli ls Node:\n{}\npw-link -l:\n{}",
+        run("pw-cli", &["ls", "Node"]),
+        run("pw-link", &["-l"])
+    )
+}
+
 fn enabled() -> bool {
     if std::env::var_os("SIDECAR_PIPEWIRE_TEST").is_none() {
         eprintln!("SIDECAR_PIPEWIRE_TEST not set: skipping (needs a running PipeWire)");
@@ -127,7 +143,11 @@ fn capture(name: &str, delay: Duration, frames: usize) -> (String, u32, Vec<Enco
                 }
                 Ok(Some(Event::Ended(r))) => panic!("capture ended early: {r:?}"),
                 Ok(None) => panic!("capture channel closed"),
-                Err(_) => panic!("only {} frames in 20 s (format: {format:?})", got.len()),
+                Err(_) => panic!(
+                    "only {} frames in 20 s (format: {format:?})\n{}",
+                    got.len(),
+                    pw_state()
+                ),
             }
         }
         drop(cap);
