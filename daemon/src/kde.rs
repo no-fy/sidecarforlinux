@@ -1,5 +1,6 @@
-//! KDE Plasma integration: pin the virtual pen to an output through KWin's
-//! D-Bus input-device API (`org.kde.KWin.InputDevice.outputName`).
+//! KDE Plasma integration: pin the virtual pen and touchscreen to an output
+//! through KWin's D-Bus input-device API
+//! (`org.kde.KWin.InputDevice.outputName`).
 //!
 //! We shell out to `busctl` (part of systemd) instead of linking a D-Bus
 //! library; it's only called once per device creation.
@@ -35,8 +36,13 @@ fn busctl(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Sets `outputName` on our tablet device(s). KWin registers new devices
-/// asynchronously, so retry for a couple of seconds.
+fn is_true(p: &str, property: &str) -> Result<bool> {
+    Ok(busctl(&["get-property", SERVICE, p, IFACE, property])?.ends_with("true"))
+}
+
+/// Sets `outputName` on our tablet and touchscreen devices (not the
+/// keyboard). KWin registers new devices asynchronously, so retry for a
+/// couple of seconds.
 pub fn map_to_output(nodes: &[PathBuf], output: &str) -> Result<()> {
     let paths: Vec<String> = nodes.iter().filter_map(|n| object_path(n)).collect();
     if paths.is_empty() {
@@ -45,14 +51,24 @@ pub fn map_to_output(nodes: &[PathBuf], output: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
     for p in &paths {
         loop {
-            let is_tablet = busctl(&["get-property", SERVICE, p, IFACE, "tabletTool"]);
-            match is_tablet {
-                Ok(v) if v.ends_with("true") => {
+            // tabletTool answers once KWin knows the device; then ask about
+            // touch (an error there just means "not a touchscreen").
+            let kind = is_true(p, "tabletTool").map(|tablet| {
+                if tablet {
+                    Some("pen")
+                } else if is_true(p, "touch").unwrap_or(false) {
+                    Some("touchscreen")
+                } else {
+                    None
+                }
+            });
+            match kind {
+                Ok(Some(kind)) => {
                     busctl(&["set-property", SERVICE, p, IFACE, "outputName", "s", output])?;
-                    tracing::info!("KWin: mapped {p} to output {output}");
+                    tracing::info!("KWin: mapped {p} ({kind}) to output {output}");
                     break;
                 }
-                Ok(_) => break, // the keyboard device, or not a tablet tool
+                Ok(None) => break, // the keyboard device
                 Err(e) if Instant::now() < deadline => {
                     tracing::debug!("waiting for KWin to see {p}: {e:#}");
                     std::thread::sleep(Duration::from_millis(200));
