@@ -213,3 +213,17 @@ Research notes with sources for everything below are in [`docs/research/`](resea
 - **Consequence, observed on your machine:** apps in X11 mode (XWayland) only pick up tablets that existed when they started. With Krita 6.0.4 in its default X11 mode, a pen created after Krita started arrived as a plain mouse (no pressure, no eraser). Created before Krita started, it arrived as a stylus with pressure and tilt.
 - **What we do instead:** run Krita in native Wayland mode (`scripts/krita-wayland.sh`), where Qt picks up tablets as they appear. In Wayland mode, Krita's tester reported pen and eraser proximity from a pen created after Krita started.
 - **Rejected:** a persistent device created at daemon start from the last iPad's geometry.
+
+## D20. Two iPad video renderers, switchable at runtime
+
+- **Why:** the second screen still felt laggy and the iPad's share (decode + display) was unmeasured. AVSampleBufferDisplayLayer can't report it: it decodes and displays inside iPadOS, with no per-frame callback.
+- **Choice:** keep AVSampleBufferDisplayLayer, and add a Metal renderer selectable in ⚙︎ → Video renderer, so the same session can be compared A/B. The Metal renderer works like this:
+  - `VTDecompressionSession`: asynchronous, real-time, no temporal processing, IOSurface NV12 output.
+  - `CVMetalTextureCache` turns the NV12 planes into textures with no copy; the fragment shader converts YCbCr to RGB.
+  - It draws into a `CAMetalLayer` with 2 drawables and `presentsWithTransaction = false`, and presents as soon as the GPU is done, with no display-link pacing. Only the newest decoded frame is drawn.
+  - It reports `decoded_ns`, and the drawable's `presentedTime` as `displayed_ns`.
+- **Prior art:** OpenDisplay (GPL-3.0, so ideas only, no code read or copied; [prior-art.md](prior-art.md)) arrived at the same design independently. Its header suspects AVSampleBufferDisplayLayer of buffering about one extra frame and says moonlight-qt has a Metal path for the same reason. That's unverified; with Metal selected, the "decoded -> on screen" figure shows what an immediate present costs, and the felt A/B difference tells us about the layer.
+- **Default:** AVSampleBufferDisplayLayer, the renderer confirmed on your iPad, until Metal is confirmed there too.
+- **Testability:** everything but the `UIView` (decoder, newest-frame slot, shader, renderer switch, feedback) lives in `SidecarNet` and runs in the macOS CI job.
+- **Undo:** delete the Metal view and the switch; the AVSampleBufferDisplayLayer path is unchanged except that it now waits for a keyframe after a switch.
+

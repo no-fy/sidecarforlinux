@@ -105,6 +105,18 @@ A hand review also caught and fixed a bug that tests couldn't have shown without
 | Wi-Fi (pen + video) | **Tested** by you: "everything works great". Latency not measured. |
 | Bugs found on your machine, fixed in the daemon/app (**confirmed by you** after updating: replica switch recovers, one Virtual-ipad after iPad off/on, no ink flash, `gdppay` in the pipeline) | • Switching the display to replica killed the video until `sidecard` restarted. The video now restarts by itself (1 s, backing off to 10 s), also when KWin closes the monitor's stream; restart after an encoder kill is tested in the VM.<br>• Turning the iPad off and on added a second `Virtual-ipad`. The monitor is now removed whenever the pen session ends, and the encoder process is killed (tested in the VM).<br>• With "Show local ink" off, the last ink stroke flashed after every lift (iPad app fix: needs reinstalling the app).<br>• Ctrl-C was ignored while waiting to reconnect (tested in the VM).<br>• **Video lag:** the daemon held every frame until the next one started, because a raw H.264 stream only shows where a frame ends when the next one begins. That cost one frame interval while drawing, and up to 1 s at the end of a stroke (the screen stops changing, so the next frame is the 1 s keep-alive). The pipelines now end in `gdppay`, which frames each picture, so it goes out at once. Measured on real GStreamer at 2 fps: a frame was usable at 0.53 s before, 0.04 s now. |
 
+## Second-screen lag, iPad side (2026-10-31, branch `feature/ipad-metal-display`)
+
+Why: pen input → frame encoded measured about 33 ms on your machine, and a 120 Hz virtual output didn't feel better. The iPad's decode + display time was the unmeasured part.
+
+| Piece | Status |
+|---|---|
+| Daemon logs `video on the iPad (p50/p95 ms, N frames in T s): decode … \| decoded -> on screen … \| received -> on screen … \| encoder out -> on screen …` every 10 s, next to the existing lines ([latency.md](latency.md#video-phase-2)) | **Tested:** unit tests, plus the **real Rust daemon** printing it in macOS CI from times sent by the iPad networking code. The decode times there are real VideoToolbox times on the CI Mac (1.8 ms p50 for 176×144); "on screen" came from a stand-in, not a screen. |
+| iPad ⚙︎ → **Video renderer: AVSampleBufferDisplayLayer / Metal** (default: AVSampleBufferDisplayLayer) | **Built but untested** (compiles against the iOS 26.5 SDK, no warnings) |
+| Metal renderer: async VideoToolbox decode into IOSurface NV12, newest frame wins, NV12 → RGB shader, aspect fit, 2 drawables, present at once, `presentedTime` reported as `displayed_ns` | **Tested on macOS** (same frameworks):<br>• Rust-made H.264 decodes into Metal-ready buffers, in order, each frame reported exactly once<br>• keyframe wait and keyframe requests<br>• the shader matches a CPU reference exactly (0/255 difference) on a Metal GPU<br>• aspect-fit bars<br>• renderer switch<br>**Untested:** presentation on a real screen. macOS never presents an offscreen layer, so CI saw 0 presented frames. |
+| AVSampleBufferDisplayLayer decode/display times | **Unknowable with public API:** the layer decodes and displays inside iPadOS with no per-frame callback. It reports 0, and the daemon line says so. |
+| Prior art | OpenDisplay (GPL-3.0, ideas only) uses the same design; see [prior-art.md](prior-art.md). |
+
 ## Things you should know
 
 - **Port changed to 47811/47812** because InkLink (a two-day-old MIT project with the same idea) uses 47800. InkLink has no encryption, hover or haptics. We share no code; collaborating is your call.

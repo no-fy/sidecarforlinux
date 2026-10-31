@@ -244,6 +244,43 @@ Paste the terminal output either way, especially any GStreamer error. If VA-API 
 
 InkLink (<https://github.com/RakeRaven/inklink>, MIT, 2 days old) has the same goal; see DECISIONS D1. If you want to propose joining forces, that's your call; I didn't contact anyone.
 
+## 12. Second-screen lag: where the iPad spends its time (A/B, 10 min) → **paste back**
+
+The iPad app has two video renderers (⚙︎ → **Video renderer**):
+- **AVSampleBufferDisplayLayer**, the default and the one you've used so far. iPadOS decodes and displays inside the layer, and it reports neither time.
+- **Metal**: the app decodes with VideoToolbox itself, always draws the newest frame, presents it as soon as the GPU is done, and reports when each frame was decoded and when it was actually on screen.
+
+1. **Install both halves from the `feature/ipad-metal-display` branch.**
+   - **Daemon:** `git fetch origin && git switch feature/ipad-metal-display && scripts/install-daemon.sh`
+   - **iPad app:** CI artifacts need a GitHub login.
+     - With the `gh` CLI:
+
+       ```bash
+       run=$(gh run list -R no-fy/sidecarforlinux -w ios -b feature/ipad-metal-display -s success -L 1 --json databaseId -q '.[0].databaseId')
+       gh run download "$run" -R no-fy/sidecarforlinux -n SidecarPad-ipa -D ~/sidecar-ipa
+       scripts/resign-ipad.sh ~/sidecar-ipa/SidecarPad.ipa
+       ```
+
+     - Without `gh`: in the browser, open the branch's latest green **ios** run under Actions, download the `SidecarPad-ipa` artifact, unzip it, then run `scripts/resign-ipad.sh path/to/SidecarPad.ipa`.
+2. **Start with a log file:**
+
+   ```bash
+   systemctl --user stop sidecard 2>/dev/null
+   sidecard run --video virtual 2>&1 | tee ~/sidecar-ab.log
+   ```
+
+3. **A, the current renderer:** ⚙︎ → Video renderer → **AVSampleBufferDisplayLayer**. Open Krita on Virtual-ipad and draw continuously for 30 s, with a few pauses (the pause line needs them). Note how laggy it feels.
+4. **B:** ⚙︎ → Video renderer → **Metal**. The picture comes back within 2 s, at the next keyframe. Draw the same way for 30 s and note the feel. If the screen stays black or the status line says `Metal video: …`, switch back to A, and send a screenshot.
+5. **Paste back:**
+
+   ```bash
+   grep -E 'video latency|video on the iPad' ~/sidecar-ab.log
+   ```
+
+   Add one sentence: does B feel different from A?
+
+What the lines mean is in [latency.md → Video](latency.md#video-phase-2). The ones from step 3 say "not reported"; that's expected for AVSampleBufferDisplayLayer.
+
 ---
 
 ### If something is stuck
