@@ -12,6 +12,8 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
     private var identity: DeviceIdentity?
     private var connected = false
     private var pendingPairing: UIAlertController?
+    /// Index 0: AVSampleBufferDisplayLayer, 1: Metal (see `Settings.metalVideo`).
+    private var videoSwitch: VideoSinkSwitch?
 
     init(root: RootViewController) {
         self.root = root
@@ -24,7 +26,9 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
             identity = id
             let s = PeerServer(identity: id, trust: trust)
             s.delegate = self
-            s.videoSink = root.video.sink
+            let sw = VideoSinkSwitch([root.video.sink, root.metalVideo.sink], selected: Settings.metalVideo ? 1 : 0)
+            videoSwitch = sw
+            s.videoSink = sw
             server = s
             root.setFingerprint(Pairing.formatFingerprint(id.fingerprint))
             s.updateSurface(root.surfaceInfo())
@@ -58,6 +62,12 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
     func openWifiPairing() {
         server?.openWifiPairingWindow()
         root.setStatus("Wi-Fi pairing open for 2 minutes: run `sidecard pair --transport wifi` on the PC", ok: true)
+    }
+
+    func setMetalVideo(_ on: Bool) {
+        Settings.metalVideo = on
+        videoSwitch?.select(on ? 1 : 0)
+        root.updateVideoViews()
     }
 
     func forgetPCs() {
@@ -168,12 +178,20 @@ enum Settings {
         get { UserDefaults.standard.object(forKey: "showInk") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "showInk") }
     }
+    /// Video renderer: Metal (true) or AVSampleBufferDisplayLayer (false,
+    /// the default until the Metal path is confirmed on a device).
+    static var metalVideo: Bool {
+        get { UserDefaults.standard.bool(forKey: "metalVideo") }
+        set { UserDefaults.standard.set(newValue, forKey: "metalVideo") }
+    }
 }
 
 final class RootViewController: UIViewController {
     weak var controller: AppController?
     let capture = PencilCaptureView(frame: .zero)
     let video = VideoView(frame: .zero)
+    let metalVideo = MetalVideoView(frame: .zero)
+    private var videoOn = false
     private let statusLabel = UILabel()
     private let latencyLabel = UILabel()
     private let gestureLabel = UILabel()
@@ -188,9 +206,12 @@ final class RootViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        video.translatesAutoresizingMaskIntoConstraints = false
-        video.isHidden = true
-        view.addSubview(video)
+        for v in [video, metalVideo] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            v.isHidden = true
+            view.addSubview(v)
+        }
+        metalVideo.onError = { [weak self] message in self?.setStatus("Metal video: \(message)", ok: false) }
         capture.translatesAutoresizingMaskIntoConstraints = false
         capture.sendPredicted = Settings.sendPredicted
         capture.showInk = Settings.showInk
@@ -221,6 +242,10 @@ final class RootViewController: UIViewController {
             video.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             video.topAnchor.constraint(equalTo: view.topAnchor),
             video.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            metalVideo.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            metalVideo.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            metalVideo.topAnchor.constraint(equalTo: view.topAnchor),
+            metalVideo.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             capture.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             capture.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             capture.topAnchor.constraint(equalTo: view.topAnchor),
@@ -263,9 +288,17 @@ final class RootViewController: UIViewController {
 
     /// With video, the pencil surface becomes transparent over the PC's screen.
     func setVideoVisible(_ on: Bool) {
-        video.isHidden = !on
+        videoOn = on
+        updateVideoViews()
         capture.backgroundColor = on ? .clear : UIColor(white: 0.08, alpha: 1)
         statusLabel.alpha = on ? 0.6 : 1
+    }
+
+    /// Shows the view of the selected renderer (⚙︎ → Video renderer).
+    func updateVideoViews() {
+        video.isHidden = !(videoOn && !Settings.metalVideo)
+        metalVideo.isHidden = !(videoOn && Settings.metalVideo)
+        rebuildMenu()
     }
 
     func setLatency(_ text: String) {
@@ -310,6 +343,13 @@ final class RootViewController: UIViewController {
             self?.capture.showInk = Settings.showInk
             self?.rebuildMenu()
         }
+        let renderers = [(false, "AVSampleBufferDisplayLayer"), (true, "Metal")].map { metal, name in
+            UIAction(title: name, state: Settings.metalVideo == metal ? .on : .off) { [weak self] _ in
+                self?.controller?.setMetalVideo(metal)
+            }
+        }
+        let renderer = UIMenu(title: "Video renderer", subtitle: Settings.metalVideo ? "Metal" : "AVSampleBufferDisplayLayer",
+                              image: UIImage(systemName: "display"), children: renderers)
         let forget = UIAction(title: "Forget paired PCs", image: UIImage(systemName: "trash"),
                               attributes: .destructive) { [weak self] _ in self?.controller?.forgetPCs() }
         let reset = UIAction(title: "New iPad identity (re-pair everything)",
@@ -320,7 +360,7 @@ final class RootViewController: UIViewController {
                           image: UIImage(systemName: "checkmark.shield"), attributes: .disabled) { _ in }
         menuButton.menu = UIMenu(children: [
             UIMenu(options: .displayInline, children: [wifi, pairWifi]),
-            UIMenu(options: .displayInline, children: [predicted, ink]),
+            UIMenu(options: .displayInline, children: [predicted, ink, renderer]),
             UIMenu(options: .displayInline, children: [fp, forget, reset]),
         ])
     }
