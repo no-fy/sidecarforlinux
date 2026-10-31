@@ -44,6 +44,16 @@ pub const CPB_MS: u32 = 500;
 /// Packed headers we write ourselves when the driver accepts them.
 const WANT_PACKED: u32 = sys::VA_ENC_PACKED_HEADER_SEQUENCE | sys::VA_ENC_PACKED_HEADER_SLICE;
 
+/// The frame rate the encoder plans for: the compositor's negotiated max
+/// when it gave a plausible one, else `[video] fps`.
+pub fn rate_hint(negotiated: u32, configured: u32) -> u32 {
+    if (10..=240).contains(&negotiated) {
+        negotiated
+    } else {
+        configured.max(1)
+    }
+}
+
 pub fn va_fourcc(drm: u32) -> Option<u32> {
     match drm {
         DRM_XRGB8888 => Some(sys::VA_FOURCC_BGRX),
@@ -235,6 +245,8 @@ struct Session {
     /// Reconstructed pictures (16-aligned): current and reference.
     recon: [Surface; 2],
     params: StreamParams,
+    /// Frame rate for the level and the rate control's per-frame budget.
+    fps: u32,
     gop: Gop,
     cur: usize,
     /// The previous picture (the reference for the next P frame).
@@ -432,16 +444,16 @@ impl VaEncoder {
         })
     }
 
-    fn session(&mut self, width: u32, height: u32) -> Result<&mut Session> {
+    fn session(&mut self, width: u32, height: u32, max_fps: u32) -> Result<&mut Session> {
+        let fps = rate_hint(max_fps, self.opts.fps);
         let fits = self
             .session
             .as_ref()
-            .is_some_and(|s| (s.params.width, s.params.height) == (width, height));
+            .is_some_and(|s| (s.params.width, s.params.height, s.fps) == (width, height, fps));
         if !fits {
             self.session = None;
             let d = &self.display;
-            let level =
-                level_for(self.profile, width, height, self.opts.fps, self.opts.kbps).unwrap_or(62);
+            let level = level_for(self.profile, width, height, fps, self.opts.kbps).unwrap_or(62);
             let params = StreamParams {
                 profile: self.profile,
                 level_idc: level,
@@ -467,7 +479,7 @@ impl VaEncoder {
                 .context("H.264 encode context")?;
             let coded = d.coded_buffer(&ctx, (aw * ah * 3 / 2) as usize + (64 << 10))?;
             tracing::info!(
-                "VA-API encoding {width}x{height} (coded {aw}x{ah}), level {}.{}, CBR {} kbit/s, CPB {CPB_MS} ms, quality level {}, IDR on request",
+                "VA-API encoding {width}x{height} (coded {aw}x{ah}) for up to {fps} frames/s, level {}.{}, CBR {} kbit/s, CPB {CPB_MS} ms, quality level {}, IDR on request",
                 level / 10,
                 level % 10,
                 self.opts.kbps,
@@ -480,6 +492,7 @@ impl VaEncoder {
                 input,
                 recon,
                 params,
+                fps,
                 gop: Gop::default(),
                 cur: 0,
                 last: None,
@@ -601,7 +614,7 @@ impl FrameSink for VaEncoder {
     }
 
     fn convert(&mut self, frame: &Frame) -> Result<Converted> {
-        self.session(frame.width, frame.height)?;
+        self.session(frame.width, frame.height, frame.max_fps)?;
         let src = match frame.pixels {
             Pixels::DmaBuf {
                 fourcc,
@@ -698,7 +711,7 @@ impl FrameSink for VaEncoder {
             )?);
             bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeHRD, &hrd(kbps))?);
             let fr = sys::VAEncMiscParameterFrameRate {
-                framerate: self.opts.fps,
+                framerate: s.fps,
                 ..Default::default()
             };
             bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeFrameRate, &fr)?);
@@ -836,6 +849,14 @@ mod tests {
         let pic = pic_param(&p, &again, 10, Some((11, pf)), 99);
         assert_eq!(pic.ReferenceFrames[0].flags, sys::VA_PICTURE_H264_INVALID);
         assert_eq!(slice_param(&p, &again, Some((11, pf))).idr_pic_id, 1);
+    }
+
+    #[test]
+    fn rate_hint_prefers_the_negotiated_rate() {
+        assert_eq!(rate_hint(120, 60), 120);
+        assert_eq!(rate_hint(0, 60), 60); // unknown
+        assert_eq!(rate_hint(1000, 60), 60); // "unlimited" test sources
+        assert_eq!(rate_hint(0, 0), 1);
     }
 
     #[test]

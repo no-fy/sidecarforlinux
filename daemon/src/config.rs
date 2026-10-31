@@ -73,7 +73,14 @@ target_usage = 7
 # softer picture.
 scale = 0.0
 bitrate_kbps = 20000
+# gstreamer/hybrid backends: the encoder's frame rate (keyframe interval,
+# test pattern). native: the rate-control hint until the compositor says how
+# fast it will send.
 fps = 60
+# native/hybrid: cap on how often KWin captures (its "max framerate").
+# 0 = no cap: as fast as the virtual monitor's refresh rate (e.g. 120 with a
+# 120 Hz mode). If the encoder can't keep up, older frames are skipped.
+max_fps = 0
 "#;
 
 #[derive(Debug, Deserialize, Default)]
@@ -97,6 +104,7 @@ pub struct VideoCfg {
     pub scale: f64,
     pub bitrate_kbps: u32,
     pub fps: u32,
+    pub max_fps: u32,
 }
 
 impl Default for VideoCfg {
@@ -110,6 +118,7 @@ impl Default for VideoCfg {
             scale: 0.0,
             bitrate_kbps: 20000,
             fps: 60,
+            max_fps: 0,
         }
     }
 }
