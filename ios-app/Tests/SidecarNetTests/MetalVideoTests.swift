@@ -410,38 +410,100 @@ final class MetalVideoTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxDiff, 4)
     }
 
-    /// The whole Metal sink with an offscreen CAMetalLayer. Whether macOS
-    /// presents a layer that isn't in a window is up to the runner, so this
-    /// checks the bookkeeping (every frame reported at most once, consistent
-    /// times) and prints what happened; presentation proper needs an iPad.
-    func testMetalSinkReportsFramesConsistently() throws {
+    /// The whole Metal sink with an offscreen CAMetalLayer, in one
+    /// presentation mode (optionally switching to another halfway). Whether
+    /// macOS presents a layer that isn't in a window, or runs a display link
+    /// for it, is up to the runner, so this checks the bookkeeping (every
+    /// frame reported exactly once, consistent times, layer settings) and
+    /// prints what happened; presentation proper needs an iPad.
+    func exerciseSink(_ mode: MetalPresentMode, switchTo second: MetalPresentMode? = nil) throws {
         let device = try metalDevice()
         let (config, frames) = try vector()
         let layer = CAMetalLayer()
         let errors = Locked<[String]>([])
-        let sink = MetalVideoSink(layer: layer, device: device) { e in errors.mutate { $0.append(e) } }
+        let stats = Locked<[String]>([])
+        let sink = MetalVideoSink(layer: layer, device: device, mode: mode,
+                                  onError: { e in errors.mutate { $0.append(e) } },
+                                  onStats: { s in stats.mutate { $0.append(s) } })
+        func checkLayer(_ m: MetalPresentMode) {
+            XCTAssertEqual(sink.mode, m)
+            XCTAssertEqual(layer.maximumDrawableCount, m == .immediate ? 2 : 3)
+            XCTAssertEqual(layer.presentsWithTransaction, m == .uiUpdate)
+        }
+        checkLayer(mode)
         layer.drawableSize = CGSize(width: 176, height: 144)
-        defer { sink.stop() }
         let log = FeedbackLog()
         sink.configure(config)
-        for f in frames {
+        for (i, f) in frames.enumerated() {
+            if let second, i == frames.count / 2 {
+                sink.setMode(second)
+                checkLayer(second)
+            }
             sink.enqueue(f, receivedNs: SessionClock.nowNs(), report: log.add)
             usleep(20_000)
+            if sink.mode == .uiUpdate {
+                // What the iPad's UIUpdateLink does once per refresh, then the
+                // UI update's Core Animation commit.
+                sink.presentForUIUpdate(target: CACurrentMediaTime() + 0.017, immediateExpected: false)
+                CATransaction.flush()
+            }
         }
-        let deadline = Date().addingTimeInterval(12)
+        usleep(200_000)
+        sink.stop()
+        let deadline = Date().addingTimeInterval(5)
         while log.all.count < frames.count && Date() < deadline { usleep(10_000) }
         let fb = log.all
         let shown = fb.filter { $0.displayedNs != 0 }
-        print("Metal sink: \(fb.count)/\(frames.count) reported, \(shown.count) presented, errors \(errors.value)")
-        for x in shown {
-            print(String(format: "  frame %u decode %.2f ms, decoded -> presented %.2f ms", x.frameID,
-                         Double(x.decodedNs - x.receivedNs) / 1e6, Double(x.displayedNs - x.decodedNs) / 1e6))
-        }
+        let name = mode.rawValue + (second.map { " -> \($0.rawValue)" } ?? "")
+        print("Metal sink (\(name)): \(fb.count)/\(frames.count) reported, \(shown.count) presented, " +
+              "errors \(errors.value), readouts \(stats.value)")
         XCTAssertEqual(Set(fb.map(\.frameID)).count, fb.count, "no frame reported twice")
-        XCTAssertGreaterThanOrEqual(fb.count, frames.count - 2, "at most the two drawables' frames still in flight")
+        // Drawables still on their way to the (absent) screen may hold the
+        // last frames; everything else must have been reported.
+        XCTAssertGreaterThanOrEqual(fb.count, frames.count - 2)
         for x in fb where !x.requestKeyframe {
             XCTAssertGreaterThanOrEqual(x.decodedNs, x.receivedNs)
             if x.displayedNs != 0 { XCTAssertGreaterThanOrEqual(x.displayedNs, x.decodedNs) }
         }
+    }
+
+    func testMetalSinkDisplayLinkMode() throws { try exerciseSink(.displayLink) }
+    func testMetalSinkUIUpdateMode() throws { try exerciseSink(.uiUpdate) }
+    func testMetalSinkImmediateMode() throws { try exerciseSink(.immediate) }
+    func testMetalSinkSwitchesModeMidStream() throws { try exerciseSink(.displayLink, switchTo: .immediate) }
+
+    // MARK: on-iPad readout
+
+    func testPresentWindowSummary() throws {
+        var w = PresentWindow()
+        XCTAssertNil(w.summary(mode: .displayLink, seconds: 1))
+        let ms: UInt64 = 1_000_000
+        for i in 0..<10 {
+            let d = 100 * ms + UInt64(i) * 16 * ms
+            w.add(decodedNs: d, submittedNs: d + 2 * ms, displayedNs: d + 20 * ms, targetNs: d + 20 * ms,
+                  immediateExpected: false)
+        }
+        // One late frame (20 ms after its target), one never shown.
+        w.add(decodedNs: 1000 * ms, submittedNs: 1002 * ms, displayedNs: 1040 * ms, targetNs: 1020 * ms,
+              immediateExpected: false)
+        w.add(decodedNs: 5, submittedNs: 6, displayedNs: 0, targetNs: nil, immediateExpected: false)
+        XCTAssertEqual(w.shown, 11)
+        XCTAssertEqual(w.dropped, 1)
+        let s = try XCTUnwrap(w.summary(mode: .displayLink, seconds: 1))
+        XCTAssertTrue(s.hasPrefix("Metal · display link: decoded → screen 20.0/40.0 ms"), s)
+        XCTAssertTrue(s.contains("submit → screen 18.0 ms"), s)
+        XCTAssertTrue(s.contains("11 shown/s"), s)
+        XCTAssertTrue(s.contains("1 dropped"), s)
+        XCTAssertTrue(s.contains("on target 90%"), s)
+        XCTAssertFalse(s.contains("immediate"), s)
+
+        var u = PresentWindow()
+        u.add(decodedNs: 0, submittedNs: 0, displayedNs: 16 * ms, targetNs: nil, immediateExpected: true)
+        u.add(decodedNs: 0, submittedNs: 0, displayedNs: 16 * ms, targetNs: nil, immediateExpected: false)
+        let us = try XCTUnwrap(u.summary(mode: .uiUpdate, seconds: 2))
+        XCTAssertTrue(us.hasPrefix("Metal · UI update link: decoded → screen 16.0/16.0 ms"), us)
+        XCTAssertTrue(us.contains("1 shown/s"), us)
+        XCTAssertTrue(us.contains("immediate 50%"), us)
+        XCTAssertFalse(us.contains("on target"), us)
     }
 }
