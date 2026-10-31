@@ -319,6 +319,46 @@ The iPad now shows its own readout under the latency line, once a second:
 
 If the UI update link entry shows `immediate 0%`, iPadOS didn't grant immediate presentation for our frames; that's worth knowing too. If any mode goes black or says `Metal video: …`, switch to another and send a screenshot.
 
+## 14. Second-screen lag: where the PC spends its time (native backend A/B, 15 min) → **paste back**
+
+`sidecard` can now capture and encode the second screen itself (`backend = "native"`, DECISIONS D22) instead of through `gst-launch-1.0` (`"gstreamer"`, still the default). The native backend logs where each frame's time goes on the PC and makes a keyframe as soon as the iPad asks for one. It has never run on a GPU yet, so expect a first-run problem; the log will name the failing step.
+
+1. **Build tools, then install the daemon from the branch** (the build now needs libclang and the PipeWire/libva headers; `setup-system.sh` shows its plan and asks before sudo):
+
+   ```bash
+   git fetch origin && git switch feature/native-capture-encode
+   scripts/setup-system.sh        # adds: clang libpipewire libva pkgconf
+   scripts/install-daemon.sh      # says "building WITHOUT the native video backend" if something is missing
+   scripts/doctor.sh | sed -n '/Video encode/,/USB/p'   # paste this too: which render node does what
+   ```
+
+2. **A, the GStreamer backend (as today):**
+
+   ```bash
+   systemctl --user stop sidecard 2>/dev/null
+   sidecard run --video virtual --video-backend gstreamer 2>&1 | tee ~/sidecar-gst.log
+   ```
+
+   Open Krita on Virtual-ipad and draw for 30 s with a few pauses (lift the pen ½ s, then draw again). Ctrl-C.
+3. **B, the native backend:**
+
+   ```bash
+   sidecard run --video virtual --video-backend native 2>&1 | tee ~/sidecar-native.log
+   ```
+
+   Same drawing for 30 s. Then hold the pen still for 3 s (screen idle), and in the iPad app switch ⚙︎ → Video renderer to another entry and back: the picture should come back at once instead of after up to 2 s (keyframe on request). Ctrl-C.
+   - If the video doesn't start, try `[video] encoder = "vaapi-lp"`, or `va_device = "/dev/dri/renderD129"` in `~/.config/sidecarforlinux/config.toml` (the doctor output says which node is the Intel GPU).
+   - If it still fails, `--video-backend hybrid` tests the capture half alone (slower: it copies every frame through the CPU into the old encoder).
+4. **Paste back:**
+
+   ```bash
+   grep -E 'video latency|video stages|video on the iPad|PipeWire format|VA-API|imported|keyframe|video channel|WARN|ERROR' ~/sidecar-gst.log ~/sidecar-native.log
+   ```
+
+   Plus one sentence: does B feel different from A?
+
+How to read the new lines: [latency.md → Where the PC's time goes](latency.md#where-the-pcs-time-goes-native-backend). The interesting split is `pen input -> capture tick` (Krita + KWin + waiting for KWin's 60 Hz capture tick) versus `video stages … tick -> sent` (KWin's capture render + our conversion + encode).
+
 ---
 
 ### If something is stuck

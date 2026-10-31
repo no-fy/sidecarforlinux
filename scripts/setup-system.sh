@@ -29,6 +29,10 @@ esac
 # On Arch the `libinput` command lives in libinput-tools.
 PKGS=(usbmuxd libimobiledevice evtest libinput-tools)
 command -v cargo >/dev/null 2>&1 || PKGS+=(rust)
+# Building sidecard's native video backend (the default build): clang for
+# bindgen, PipeWire and libva headers (docs/dependencies.md). --needed skips
+# what is already installed.
+BUILD_PKGS=(clang libpipewire libva pkgconf)
 
 # Some packages (Steam, game-controller rules, ...) already give the logged-in
 # user access to /dev/uinput through a udev "uaccess" ACL. Then the group and
@@ -40,7 +44,9 @@ fi
 
 echo "This will run, in order:"
 echo
-echo "  1. sudo pacman -S --needed ${PKGS[*]}"
+echo "  1. sudo pacman -S --needed ${PKGS[*]} ${BUILD_PKGS[*]}"
+echo "       (${BUILD_PKGS[*]}: to build sidecard's native video backend. clang with its"
+echo "        dependencies is about 400 MB. Without them install-daemon.sh builds without it.)"
 if [ "$UINPUT_STEPS" -eq 1 ]; then
   cat <<PLAN
   2. sudo groupadd --system --force $GROUP
@@ -76,7 +82,7 @@ case "$ans" in y|Y|yes|YES) ;; *) echo "Nothing done."; exit 0 ;; esac
 
 run() { echo "+ $*"; "$@"; }
 
-run sudo pacman -S --needed "${PKGS[@]}"
+run sudo pacman -S --needed "${PKGS[@]}" "${BUILD_PKGS[@]}"
 if [ "$UINPUT_STEPS" -eq 1 ]; then
   run sudo groupadd --system --force "$GROUP"
   echo "+ sudo tee $RULE"

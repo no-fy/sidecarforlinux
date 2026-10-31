@@ -120,6 +120,8 @@ Our bitstream writer (Exp-Golomb, emulation prevention, SPS/PPS/slice header) is
 
 The iPad sets `VideoFeedback.request_keyframe` when it couldn't show a frame. It does that for *every* frame until it gets an IDR, so we de-duplicate: a request is honoured only if no IDR newer than the failed frame is already sent or pending. If the screen is idle (KWin sends nothing), the last converted picture is re-encoded as an IDR, so the iPad recovers without waiting for the next change.
 
+KWin sends nothing while the screen is still, and the iPad only asks for a keyframe when a frame arrives that it can't show. So, like `pipewiresrc keepalive-time=1000` in the GStreamer backend, the last picture is re-encoded after a second without frames (a tiny P frame). Re-encoded pictures are marked as repeats: they stay out of the stage statistics and the pen probe.
+
 ## 4. Source-agnostic encode path (for a second compositor later)
 
 The encoder must not care where a DMA-BUF came from. You plan to try **Wayfire 0.11.0** (wlroots 0.20) later, where the source is not PipeWire. Facts you verified in Wayfire's source (not re-checked here, **assumption** for this doc):
@@ -173,10 +175,19 @@ Pipelining (VPP of frame N+1 while frame N encodes) would only raise throughput 
 - **KRdp / KPipeWire** (LGPL): DMA-BUF → libav VA-API on KDE, modifiers from EGL.
 - **OBS** `linux-pipewire`: modifier renegotiation after a failed import.
 
-## 8. What can and can't be tested here
+## 8. What was tested, and where
 
-| Piece | Where | Status |
+| Piece | How | Status |
 |---|---|---|
-| Bitstream writer (SPS/PPS/slice header), level choice, GOP/IDR policy, timing math, negotiation helpers, buffer selection, latest-wins slot | unit tests (any machine) + FFmpeg `trace_headers` cross-check | see the PR |
-| PipeWire consumer: connect, negotiate SHM, drain to newest, timing | this VM / CI: PipeWire + WirePlumber + a synthetic `Video/Source` node (`gst-launch-1.0 videotestsrc ! pipewiresink`), `backend = "hybrid"` with x264 → fake iPad | see the PR |
-| DMA-BUF negotiation with KWin, VA import, VPP, VA encode | **only your machine** (no `/dev/dri` here or on CI runners) | **built but untested** |
+| Bitstream writer (Exp-Golomb, emulation prevention, SPS/PPS/slice header), level choice, IDR schedule, keyframe-request de-duplication | unit tests | **tested** |
+| Our SPS/PPS/slice headers read by an independent parser | FFmpeg `trace_headers` (`tests/h264_headers.rs`, High/Main/Constrained Baseline): IDR/P/P/IDR, frame_num 0/1/2/0, crop to 2360×1640, POC type 2, BT.709 limited, no reordering | **tested** (VM, CI) |
+| VA parameter structs (sequence, picture, slice, rate control, HRD) consistent with the headers | unit tests on the generated libva structs | **tested** (values only; no driver) |
+| Stage timing math, frames/s, pen → capture tick probe, newest-usable selection, modifier bookkeeping, SPA↔DRM formats, EnumFormat pods (modifier flags, DMA-BUF first) | unit tests | **tested** |
+| PipeWire consumer against a real PipeWire daemon and a synthetic `Video/Source` node (`gst-launch-1.0 videotestsrc ! pipewiresink`) | `tests/pipewire_capture.rs` with PipeWire 1.4.2 + WirePlumber 0.5 (VM) and 1.0.5 + 0.4 (Ubuntu 24.04 CI, needs a D-Bus session) | **tested**: a sink that offers DMA-BUF modifiers falls back to SHM when the producer can't; a 3× too slow sink still gets fresh pictures (no backlog); a keyframe request gives exactly one IDR, re-encoded from the last picture within 300 ms when idle, from the next frame within 200 ms when busy; with a source that sends one frame per 5 s, the keep-alive re-sends the picture after ~1 s. These tests found a bug (an idle keyframe repeated every 50 ms), now fixed. |
+| "Skip older queued buffers" branch | unit test only | gst's `pipewiresink` recycles its buffer instead of queueing several, so a real queue of 2+ never formed in the VM. KWin (driver, 2–4 buffers) may queue; the log's "stale buffers skipped" will tell. |
+| `backend = "hybrid"` end to end: PipeWire → our consumer → raw frames → gst x264 → AVCC → video channel → fake iPad | CLI in the VM and CI | **tested** (649 frames, stage line logged) |
+| `backend = "native"` without a GPU | VM | **tested**: fails with "no VA-API device can encode H.264 … no /dev/dri/renderD* nodes" and the channel retries |
+| DMA-BUF negotiation with KWin, VA import, VPP, VA H.264 encode, rate control, packed headers accepted by iHD | needs your machine | **built but untested** |
+| KWin's `pts` is the capture tick on CLOCK_MONOTONIC | KWin source (`addHeader`, `VsyncSource`) | **assumption** until the stage line shows a plausible "capture tick -> daemon" |
+| Implicit sync is enough for VA to read KWin's buffer | driver behaviour | **assumption** |
+| MSRV 1.80 | `cargo +1.80 check --workspace --all-targets` with a lockfile resolved for 1.80 (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) | **tested**. Note: the committed `Cargo.lock` (already on `main`) has `clap_lex 1.1.1`, which needs Rust ≥ 1.85, so the lockfile as committed doesn't build on 1.80. |

@@ -32,14 +32,33 @@ Machine, from `scripts/doctor.sh` on 2026-10-30: **MacBook Pro 16" 2019 (MacBook
 | A. xtool | xtool **AppImage** (1.24.0), `fuse2`; Apple ID login on the PC. **No** Xcode.xip needed to sign or install a prebuilt `.ipa`. |
 | B. SideStore | `iloader` (2.4.1+) on the PC once; SideStore ≥ 0.7.0-alpha and LocalDevVPN on the iPad |
 
-## Phase 2 (virtual display): later
+## Phase 2 (virtual display)
 
-| Package | Why |
-|---|---|
-| `pipewire`, `wireplumber` | screen capture (already in Plasma) |
-| `gstreamer`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, **`gst-plugin-va`** (VA-API encoders, separate package on Arch), `gst-plugin-pipewire`, `gst-plugins-ugly` (x264 fallback and test pattern) | the encoder subprocess (`gst-launch-1.0`, DECISIONS D18). Package names checked against archlinux.org on 2026-10-30. |
-| `ffmpeg` (alternative to GStreamer) | `h264_vaapi` |
-| `libva-mesa-driver` / `mesa` | VA-API encode on radeonsi |
+`[video] backend` picks who captures and encodes (DECISIONS D18, D21):
+
+| Package (Arch) | Needed for | Why |
+|---|---|---|
+| `pipewire`, `wireplumber` | all backends | screen capture (already in Plasma) |
+| `libva`, `intel-media-driver` (Intel, iHD) / `libva-mesa-driver` or `mesa` (AMD) | `native`, and `gstreamer` with `vaapi` | VA-API encode. `libva-utils` gives `vainfo` for diagnostics. |
+| `gstreamer`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, **`gst-plugin-va`** (VA-API encoders, separate package on Arch), `gst-plugin-pipewire`, `gst-plugins-ugly` (x264 fallback and test pattern) | `gstreamer` (default) and `hybrid` | the encoder subprocess (`gst-launch-1.0`). Package names checked against archlinux.org on 2026-10-30. |
+| `ffmpeg` | nothing at run time | `doctor.sh` prints its version; CI uses it to cross-check our H.264 headers |
+
+### Building `sidecard` with the native backend (default on Linux)
+
+The `native-video` cargo feature (on by default, Linux only) links libpipewire and libva and generates bindings at build time with **bindgen**, which needs **libclang**:
+
+| Arch | Debian/Ubuntu | Why |
+|---|---|---|
+| `clang` | `libclang-dev` | bindgen (pipewire-rs's `libspa-sys`/`pipewire-sys`, and our libva bindings in `daemon/build.rs`) |
+| `libpipewire` (headers and `.pc` files; comes with `pipewire`) | `libpipewire-0.3-dev`, `libspa-0.2-dev` | PipeWire consumer |
+| `libva` (headers included) | `libva-dev` | VA-API encoder |
+| `pkgconf` | `pkg-config` | finding the two above |
+
+`scripts/setup-system.sh` installs them (it shows its plan and asks before sudo). `scripts/install-daemon.sh` checks for them and, if something is missing, says what and builds without the native backend instead (`--no-default-features --features display`). macOS builds (the interop tests) ignore the feature.
+
+Licences: libpipewire/libspa are MIT (some PipeWire plugins it may load are LGPL-2.1+, dynamically); libva is MIT; the `pipewire` crate is MIT; bindgen (BSD-3) only runs at build time. No GPL code is linked: Arch's FFmpeg is a GPLv3 build, which is one reason it isn't used (D21).
+
+Runtime: PipeWire ≥ 1.0 (the `pipewire` crate's `v1_0_0` API level).
 
 ## t2linux specifics
 

@@ -123,7 +123,8 @@ Forget a pairing:
 
 ```
 sidecard run [--pair] [--transport auto|usb|wifi|tcp] [--record FILE] [--dry-run]
-             [--video off|virtual|test-pattern|file:CLIP.h264]   # phase 2, experimental
+             [--video off|virtual|test-pattern|file:CLIP.h264|pipewire:NODE]   # phase 2, experimental
+             [--video-backend gstreamer|native|hybrid]   # who captures/encodes (docs/research/native-video.md)
 sidecard display-probe                # phase 2: create a KWin virtual monitor, print its PipeWire node
 sidecard pair                         # pair a new iPad (asks on this terminal)
 sidecard latency --duration 30        # touch -> uinput latency histogram (docs/latency.md)
