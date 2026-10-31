@@ -184,6 +184,55 @@ final class PeerServerTests: XCTestCase {
         server.stop()
     }
 
+    /// Sinks report later (when the frame is on screen); the feedback then
+    /// carries their decode and display times.
+    func testVideoFeedbackCarriesDecodeAndDisplayTimes() async throws {
+        let ipad = try DeviceIdentity.loadOrCreate(ipadNS)
+        let daemonID = try DeviceIdentity.loadOrCreate(daemonNS)
+        let trust = TrustStore(defaultsKey: "test.trust.\(UUID().uuidString)")
+        trust.add(daemonID.fingerprint, name: "pc")
+        let port = UInt16.random(in: 42000...48000)
+        let server = PeerServer(identity: ipad, trust: trust, usbPort: port)
+        let sink = DecodeAndShowSink()
+        server.videoSink = sink
+        let delegate = await MainActor.run { RecordingDelegate() }
+        await MainActor.run { server.delegate = delegate }
+        server.start(wifi: false)
+        try await waitUntil { !delegate.statuses.isEmpty }
+
+        let pen = TestDaemon(identity: daemonID, port: port)
+        try await waitUntilReady(pen)
+        pen.send(hello(trusts: true))
+        guard case .helloAck = try await pen.next() else { return XCTFail("expected HelloAck") }
+        try await waitUntil { delegate.isConnected }
+        let vid = TestDaemon(identity: daemonID, port: port)
+        try await waitUntilReady(vid)
+        vid.send(hello(trusts: true, channel: .video, session: 42))
+        guard case .helloAck = try await vid.next() else { return XCTFail("expected video HelloAck") }
+        let msgs = try VideoDecoderTests.messages()
+        for m in msgs { vid.send(m) }
+
+        var feedback: [VideoFeedback] = []
+        for _ in 0..<8 {
+            guard case .videoFeedback(let fb) = try await vid.next(where: {
+                if case .videoFeedback = $0 { return true } else { return false }
+            }) else { return XCTFail("expected VideoFeedback") }
+            feedback.append(fb)
+        }
+        XCTAssertEqual(Set(feedback.map(\.frameID)), Set(1...8))
+        for fb in feedback {
+            XCTAssertFalse(fb.requestKeyframe)
+            XCTAssertGreaterThan(fb.receivedNs, 0)
+            XCTAssertGreaterThanOrEqual(fb.decodedNs, fb.receivedNs)
+            XCTAssertGreaterThan(fb.displayedNs, fb.decodedNs)
+        }
+        let viaMain = await MainActor.run { delegate.videoFrames.count }
+        XCTAssertEqual(viaMain, 0, "with a sink, frames skip the main queue")
+        pen.cancel()
+        vid.cancel()
+        server.stop()
+    }
+
     func testIdentityIsCreatedOnceAndIsAValidV3Certificate() throws {
         let a = try DeviceIdentity.loadOrCreate(ipadNS)
         let b = try DeviceIdentity.loadOrCreate(ipadNS)

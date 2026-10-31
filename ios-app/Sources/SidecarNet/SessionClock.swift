@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(QuartzCore)
+import QuartzCore
+#endif
 
 /// The iPad side of the protocol clock.
 ///
@@ -20,4 +23,15 @@ public enum SessionClock {
     public static func nowNs() -> UInt64 {
         ns(fromUptime: ProcessInfo.processInfo.systemUptime)
     }
+
+    #if canImport(QuartzCore)
+    /// Session nanoseconds for a Core Animation / Metal host time
+    /// (`CACurrentMediaTime()`, `MTLDrawable.presentedTime`). Both clocks
+    /// count mach_absolute_time on Apple platforms; the gap between them is
+    /// measured rather than assumed to be zero.
+    public static func ns(fromMediaTime t: CFTimeInterval) -> UInt64 {
+        let gap = ProcessInfo.processInfo.systemUptime - CACurrentMediaTime()
+        return ns(fromUptime: t + gap)
+    }
+    #endif
 }
