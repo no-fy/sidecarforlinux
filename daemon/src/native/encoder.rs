@@ -17,7 +17,7 @@ use super::frame::{
     fourcc_name, Converted, Encoded, Frame, FrameSink, Pixels, Plane, DRM_ABGR8888, DRM_ARGB8888,
     DRM_FORMAT_MOD_LINEAR, DRM_XBGR8888, DRM_XRGB8888,
 };
-use super::h264::{level_for, Gop, PicPlan, Profile, StreamParams};
+use super::h264::{level_for, Gop, PicPlan, Profile, StreamParams, MAX_LEVEL};
 use super::pw::{EndError, Event};
 use super::stats::StageTimes;
 use super::va::{Buffer, Config, Context, Display, Dpy, Surface};
@@ -740,7 +740,18 @@ impl VaEncoder {
             self.completion.wait_below(1)?;
             self.session = None;
             let d = &self.display;
-            let level = level_for(self.profile, width, height, fps, self.opts.kbps).unwrap_or(62);
+            let needed = level_for(self.profile, width, height, fps, self.opts.kbps).unwrap_or(62);
+            // The capture is capped to fit MAX_LEVEL; if a stream still
+            // needs more, label it 5.2 rather than fail every frame.
+            if needed > MAX_LEVEL {
+                tracing::warn!(
+                    "{width}x{height} at {fps} frames/s needs H.264 level {}.{}; encoding it as \
+                     level 5.2 (Intel's encoder rejects level 6)",
+                    needed / 10,
+                    needed % 10
+                );
+            }
+            let level = needed.min(MAX_LEVEL);
             let params = StreamParams {
                 profile: self.profile,
                 level_idc: level,

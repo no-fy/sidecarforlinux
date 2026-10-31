@@ -171,6 +171,34 @@ const LEVELS: &[(u8, u32, u32, u32, u32)] = &[
     (62, 16_711_680, 139_264, 800_000, 696_320),
 ];
 
+/// The highest level we encode: 5.2. At 240 frames/s a 2360x1640 stream
+/// needs 6.0, and Intel's Gen9.5 encoder (iHD) failed every first frame
+/// with "internal encoding error" (your run, 2026-10-31). Whether the iPad
+/// would decode level 6 is untested; 5.2 avoids finding out.
+pub const MAX_LEVEL: u8 = 52;
+
+/// The highest frame rate `level_idc` allows at this picture size: its
+/// macroblock rate (MaxMBPS) over the frame's macroblocks. At least 1.
+pub fn max_fps_at_level(width: u32, height: u32, level_idc: u8) -> u32 {
+    let fs = width.div_ceil(16) as u64 * height.div_ceil(16) as u64;
+    let max_mbps = LEVELS.iter().find(|l| l.0 == level_idc).map_or(0, |l| l.1) as u64;
+    (max_mbps / fs.max(1)).max(1) as u32
+}
+
+/// How fast to ask the compositor to capture: the configured cap
+/// (`[video] max_fps`, 0 = none), but never above what [`MAX_LEVEL`]
+/// allows at this size. A 240 Hz virtual monitor then still works: it
+/// redraws at 240, the video goes out at the cap. 0 (uncapped) stays 0
+/// when the level allows 1000/s or more (small test sources).
+pub fn capture_cap(configured: u32, width: u32, height: u32) -> u32 {
+    let level = max_fps_at_level(width, height, MAX_LEVEL);
+    match configured {
+        0 if level >= 1000 => 0,
+        0 => level,
+        c => c.min(level),
+    }
+}
+
 /// Smallest level for this picture size, frame rate, bitrate and one
 /// reference frame. `None` if even 6.2 is too small.
 pub fn level_for(profile: Profile, width: u32, height: u32, fps: u32, kbps: u32) -> Option<u8> {
@@ -599,6 +627,22 @@ mod tests {
         assert_eq!(level_for(Profile::Main, 2732, 2048, 30, 20_000), Some(51));
         assert_eq!(level_for(Profile::Main, 2732, 2048, 24, 20_000), Some(50));
         assert_eq!(level_for(Profile::High, 16384, 16384, 60, 20_000), None);
+    }
+
+    #[test]
+    fn capture_stays_within_level_5_2() {
+        // 148x103 = 15244 MBs: 5.2's 2073600 MB/s allow 136 frames/s.
+        assert_eq!(max_fps_at_level(2360, 1640, 52), 136);
+        assert_eq!(level_for(Profile::High, 2360, 1640, 136, 20_000), Some(52));
+        assert_eq!(level_for(Profile::High, 2360, 1640, 137, 20_000), Some(60));
+        // Uncapped or 240 -> 136; a lower cap stays.
+        assert_eq!(capture_cap(0, 2360, 1640), 136);
+        assert_eq!(capture_cap(240, 2360, 1640), 136);
+        assert_eq!(capture_cap(120, 2360, 1640), 120);
+        // 13" iPad (21888 MBs): 94 frames/s.
+        assert_eq!(capture_cap(0, 2732, 2048), 94);
+        // A small test source stays uncapped.
+        assert_eq!(capture_cap(0, 640, 480), 0);
     }
 
     fn ipad() -> StreamParams {

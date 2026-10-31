@@ -445,7 +445,9 @@ If the readout says `not measurable`, send it anyway: it says whether the layer 
    kscreen-doctor output.Virtual-ipad.mode.2360x1640@240
    ```
 
-   Then restart `sidecard run` (KWin fixes the capture rate when the stream starts) and draw for 30 s. Check `grep -E 'PipeWire format|video stages' ~/r4.log | tail -4`: `max 239…/1000 fps`, `peak` near 240, `stale buffers skipped` 0, `encode` p95 under ~4 ms. Back to 120: `kscreen-doctor output.Virtual-ipad.mode.2360x1640@120`.
+   Then restart `sidecard run` (KWin fixes the capture rate when the stream starts) and draw for 30 s. Back to 120: `kscreen-doctor output.Virtual-ipad.mode.2360x1640@120`.
+
+   > **Result (your run):** at 240 the stream needed H.264 level 6.0 and Intel's encoder failed every first frame, so the screen blinked in and out. Fixed: the capture now stops at 136 frames/s (the most level 5.2 allows at this size) while the screen itself can run at 240. Try again after `git pull && scripts/install-daemon.sh`: the log should say `native capture: at most 136 frames/s` and `PipeWire format: … max 136/1 fps`.
 
 ---
 

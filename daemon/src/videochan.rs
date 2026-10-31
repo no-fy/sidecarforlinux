@@ -386,11 +386,20 @@ async fn produce_native(
 ) -> Result<()> {
     use crate::native::pw::{Capture, CaptureSpec, Event};
     let (ev_tx, mut events) = mpsc::channel::<Event>(4);
+    let max_fps = crate::native::h264::capture_cap(spec.max_fps, spec.width, spec.height);
+    if max_fps != spec.max_fps {
+        tracing::info!(
+            "native capture: at most {max_fps} frames/s at {}x{} (faster needs H.264 level 6, \
+             which Intel's encoder rejects)",
+            spec.width,
+            spec.height
+        );
+    }
     let cap = CaptureSpec {
         target: spec.target.clone(),
         width: spec.width,
         height: spec.height,
-        max_fps: spec.max_fps,
+        max_fps,
     };
     let capture = match &spec.kind {
         NativeKind::Hybrid => {
