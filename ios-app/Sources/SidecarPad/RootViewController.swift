@@ -64,9 +64,14 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
         root.setStatus("Wi-Fi pairing open for 2 minutes: run `sidecard pair --transport wifi` on the PC", ok: true)
     }
 
-    func setMetalVideo(_ on: Bool) {
-        Settings.metalVideo = on
-        videoSwitch?.select(on ? 1 : 0)
+    /// ⚙︎ → Video renderer. `present` is nil for AVSampleBufferDisplayLayer.
+    func setRenderer(metal: Bool, present: MetalPresentMode?) {
+        Settings.metalVideo = metal
+        if let present {
+            Settings.metalPresent = present
+            root.metalVideo.setPresentMode(present)
+        }
+        videoSwitch?.select(metal ? 1 : 0)
         root.updateVideoViews()
     }
 
@@ -178,11 +183,16 @@ enum Settings {
         get { UserDefaults.standard.object(forKey: "showInk") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "showInk") }
     }
-    /// Video renderer: Metal (true) or AVSampleBufferDisplayLayer (false,
-    /// the default until the Metal path is confirmed on a device).
+    /// Video renderer: Metal (true, the default since it felt better on
+    /// your iPad Air M4, DECISIONS D20) or AVSampleBufferDisplayLayer.
     static var metalVideo: Bool {
-        get { UserDefaults.standard.bool(forKey: "metalVideo") }
+        get { UserDefaults.standard.object(forKey: "metalVideo") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "metalVideo") }
+    }
+    /// How the Metal renderer hands frames to the screen (DECISIONS D21).
+    static var metalPresent: MetalPresentMode {
+        get { UserDefaults.standard.string(forKey: "metalPresent").flatMap(MetalPresentMode.init(rawValue:)) ?? .displayLink }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "metalPresent") }
     }
 }
 
@@ -194,6 +204,8 @@ final class RootViewController: UIViewController {
     private var videoOn = false
     private let statusLabel = UILabel()
     private let latencyLabel = UILabel()
+    /// The Metal renderer's own readout (decoded → screen), once a second.
+    private let videoStatsLabel = UILabel()
     private let gestureLabel = UILabel()
     private let menuButton = UIButton(type: .system)
     private var fingerprint = ""
@@ -212,12 +224,17 @@ final class RootViewController: UIViewController {
             view.addSubview(v)
         }
         metalVideo.onError = { [weak self] message in self?.setStatus("Metal video: \(message)", ok: false) }
+        metalVideo.onStats = { [weak self] text in
+            guard let self, self.videoOn, Settings.metalVideo else { return }
+            self.videoStatsLabel.text = text
+        }
+        metalVideo.setPresentMode(Settings.metalPresent)
         capture.translatesAutoresizingMaskIntoConstraints = false
         capture.sendPredicted = Settings.sendPredicted
         capture.showInk = Settings.showInk
         view.addSubview(capture)
 
-        for l in [statusLabel, latencyLabel, gestureLabel] {
+        for l in [statusLabel, latencyLabel, videoStatsLabel, gestureLabel] {
             l.translatesAutoresizingMaskIntoConstraints = false
             l.textColor = UIColor(white: 0.85, alpha: 1)
             l.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -257,6 +274,9 @@ final class RootViewController: UIViewController {
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -12),
             latencyLabel.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 6),
             latencyLabel.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+            videoStatsLabel.topAnchor.constraint(equalTo: latencyLabel.bottomAnchor, constant: 4),
+            videoStatsLabel.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+            videoStatsLabel.trailingAnchor.constraint(lessThanOrEqualTo: g.trailingAnchor, constant: -16),
             gestureLabel.bottomAnchor.constraint(equalTo: g.bottomAnchor, constant: -16),
             gestureLabel.centerXAnchor.constraint(equalTo: g.centerXAnchor),
         ])
@@ -298,6 +318,7 @@ final class RootViewController: UIViewController {
     func updateVideoViews() {
         video.isHidden = !(videoOn && !Settings.metalVideo)
         metalVideo.isHidden = !(videoOn && Settings.metalVideo)
+        if !videoOn || !Settings.metalVideo { videoStatsLabel.text = nil }
         rebuildMenu()
     }
 
@@ -343,12 +364,27 @@ final class RootViewController: UIViewController {
             self?.capture.showInk = Settings.showInk
             self?.rebuildMenu()
         }
-        let renderers = [(false, "AVSampleBufferDisplayLayer"), (true, "Metal")].map { metal, name in
-            UIAction(title: name, state: Settings.metalVideo == metal ? .on : .off) { [weak self] _ in
-                self?.controller?.setMetalVideo(metal)
+        var renderers: [UIAction] = MetalPresentMode.allCases.map { mode in
+            let title: String
+            switch mode {
+            case .displayLink: title = "Metal · display link"
+            case .uiUpdate: title = "Metal · UI update link (iOS 18+)"
+            case .immediate: title = "Metal · present at once (round 1)"
+            }
+            var attributes: UIMenuElement.Attributes = []
+            if mode == .uiUpdate {
+                if #available(iOS 18.0, *) {} else { attributes = .disabled }
+            }
+            let on = Settings.metalVideo && Settings.metalPresent == mode
+            return UIAction(title: title, attributes: attributes, state: on ? .on : .off) { [weak self] _ in
+                self?.controller?.setRenderer(metal: true, present: mode)
             }
         }
-        let renderer = UIMenu(title: "Video renderer", subtitle: Settings.metalVideo ? "Metal" : "AVSampleBufferDisplayLayer",
+        renderers.append(UIAction(title: "AVSampleBufferDisplayLayer", state: Settings.metalVideo ? .off : .on) {
+            [weak self] _ in self?.controller?.setRenderer(metal: false, present: nil)
+        })
+        let renderer = UIMenu(title: "Video renderer",
+                              subtitle: Settings.metalVideo ? "Metal · \(Settings.metalPresent.label)" : "AVSampleBufferDisplayLayer",
                               image: UIImage(systemName: "display"), children: renderers)
         let forget = UIAction(title: "Forget paired PCs", image: UIImage(systemName: "trash"),
                               attributes: .destructive) { [weak self] _ in self?.controller?.forgetPCs() }
