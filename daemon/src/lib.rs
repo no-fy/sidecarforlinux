@@ -14,6 +14,7 @@ pub mod gestures;
 pub mod identity;
 pub mod kde;
 pub mod keys;
+pub mod native;
 pub mod recording;
 pub mod session;
 pub mod sink;

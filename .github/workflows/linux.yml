@@ -16,16 +16,21 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Install evtest + libinput tools + GStreamer (video test pattern)
+      - name: Install evtest + libinput tools + GStreamer (video test pattern) + native video build deps
+        # libclang: bindgen (pipewire-rs, libva bindings). ffmpeg: cross-checks
+        # our H.264 headers (tests/h264_headers.rs).
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq evtest libinput-tools gstreamer1.0-tools gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+            libclang-dev libpipewire-0.3-dev libspa-0.2-dev libva-dev pkg-config ffmpeg
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Unit + end-to-end tests (fake iPad over TLS, no uinput)
+        env:
+          SIDECAR_REQUIRE_FFMPEG: "1"
         run: cargo test --workspace
       - name: Build release
         run: cargo build --release -p sidecard
