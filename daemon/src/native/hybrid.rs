@@ -38,10 +38,15 @@ struct Running {
     key: (u32, u32, u32),
     child: Child,
     slot: Arc<Latest<RawFrame>>,
+    /// Set before killing gst on purpose (size change, shutdown), so its
+    /// reader doesn't report "the encoder exited".
+    stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.slot.close();
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -139,6 +144,8 @@ impl GstPipeSink {
             })?;
 
         let out = self.out.clone();
+        let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping2 = stopping.clone();
         std::thread::Builder::new()
             .name("sidecard-gst-out".into())
             .spawn(move || {
@@ -173,12 +180,15 @@ impl GstPipeSink {
                         }
                     }
                 };
-                let _ = out.blocking_send(Event::Ended(Err(why)));
+                if !stopping2.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = out.blocking_send(Event::Ended(Err(why)));
+                }
             })?;
         self.running = Some(Running {
             key: (width, height, fourcc),
             child,
             slot,
+            stopping,
         });
         Ok(())
     }
