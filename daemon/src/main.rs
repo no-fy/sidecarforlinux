@@ -55,6 +55,9 @@ struct ConnArgs {
     /// [video] backend in config.toml).
     #[arg(long, value_parser = ["gstreamer", "native", "hybrid"])]
     video_backend: Option<String>,
+    /// Video encoder: vaapi | vaapi-lp | x264 (default: [video] encoder).
+    #[arg(long, value_parser = ["vaapi", "vaapi-lp", "x264"])]
+    video_encoder: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -395,7 +398,11 @@ impl VideoPlan {
                 .unwrap_or_else(|| env.cfg.video.backend.clone()),
             va_device: (!env.cfg.video.va_device.is_empty())
                 .then(|| PathBuf::from(&env.cfg.video.va_device)),
-            encoder: match env.cfg.video.encoder.as_str() {
+            encoder: match a
+                .video_encoder
+                .as_deref()
+                .unwrap_or(env.cfg.video.encoder.as_str())
+            {
                 "x264" => videochan::Encoder::X264,
                 "vaapi-lp" => videochan::Encoder::VaapiLowPower,
                 _ => videochan::Encoder::Vaapi,

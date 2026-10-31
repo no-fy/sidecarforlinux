@@ -52,26 +52,27 @@ How to read the iPad line:
 
 With **AVSampleBufferDisplayLayer** (the fallback renderer), the line says the times aren't reported. That layer decodes and displays inside iPadOS and has no per-frame callback for either, so decode and display time are unknowable there with public API. Comparing it with Metal is therefore by feel, or with a camera (below), plus the Metal numbers showing how much the iPad side can cost at all.
 
-Rough total, pencil to iPad screen: touch → uinput (≈ 9 ms p50) + pen input → frame encoded (≈ 33 ms measured) + encoder out → on screen (Metal line). That's a sum of medians, not a measured distribution. With the Metal renderer the daemon prints the last two added up: `video latency (pen input -> on the iPad screen, sum of medians) about N ms`.
+Rough total, pencil to iPad screen: touch → uinput (≈ 9 ms p50) + pen input → frame encoded (≈ 10–11 ms with the GStreamer backend at 120 Hz; 33 ms at 60 Hz before) + encoder out → on screen (Metal line, ≈ 38–43 ms). That's a sum of medians, not a measured distribution. With the Metal renderer the daemon prints the last two added up: `video latency (pen input -> on the iPad screen, sum of medians) about N ms`.
 
 ### Where the PC's time goes (native backend)
 
 With `[video] backend = "native"` (or `--video-backend native`), two more lines say where "pen input -> frame encoded" goes:
 
 ```
-video stages p50/p95 ms over N frames: capture tick -> daemon A, convert B, encode C, send D; tick -> sent E; S stale buffers skipped; peak F frames/s
+video stages p50/p95 ms over N frames: capture tick -> daemon A, ready R, convert B, encode C, send D; tick -> sent E; S stale buffers skipped; peak F frames/s
 video latency (pen input -> capture tick, after a pause) p50 … ms p95 … ms over N pauses
 ```
 
 | Part | From → to | What it contains |
 |---|---|---|
-| pen input → capture tick | uinput write → KWin's capture tick for the frame that shows it | Krita drawing the stroke, KWin compositing, and the **wait for KWin's next capture tick**. KWin ticks on a fixed 60 Hz grid (`VsyncSource::arm`), so 0–16.7 ms of this is that wait, 8.3 ms on average. |
-| capture tick → daemon | the tick (`spa_meta_header.pts`, CLOCK_MONOTONIC) → the buffer reached sidecard | KWin re-rendering the scene into the capture buffer, PipeWire hand-off. |
-| convert | buffer dequeued → VA-API colour conversion done (KWin gets the buffer back here) | DMA-BUF import (cached) + BGRx → NV12 on the GPU. Also waits for KWin's rendering to finish (implicit sync). |
-| encode | conversion done → H.264 bytes in hand | VA-API encode. |
+| pen input → capture tick | uinput write → KWin's capture tick for the frame that shows it | Krita drawing the stroke, KWin compositing, and the **wait for KWin's next capture tick**. KWin ticks on a fixed grid at the negotiated max framerate (`VsyncSource::arm`): at 60 Hz that wait is 0–16.7 ms, 8.3 ms on average; at 120 Hz half that. Since round 2 the native backend lets KWin tick as fast as the output refreshes (`[video] max_fps = 0`). |
+| capture tick → daemon | the tick (`spa_meta_header.pts`, CLOCK_MONOTONIC) → the buffer reached sidecard | KWin queueing its render of the scene into the capture buffer, PipeWire hand-off. The GPU may still be drawing. |
+| ready | buffer dequeued → KWin's GPU render into it finished (round 2) | The DMA-BUF's implicit fence: how long KWin's capture render takes on the GPU. With shared memory, our CPU upload instead. |
+| convert | ready → VA-API colour conversion done (KWin gets the buffer back here) | BGRx → NV12 on the GPU, measured as GPU work since round 2 (before: from dequeue, including the wait above). |
+| encode | conversion done → H.264 bytes in hand | VA-API encode on the GPU, including waiting for the previous frame's encode (two frames can be in flight). |
 | send | bytes in hand → written to the iPad's socket | AVCC packaging, TLS. |
 | **stale buffers skipped** | | Older pictures dropped because a newer one was already waiting: only the newest is encoded. |
-| **peak frames/s** | | The busiest second: the real capture rate while something keeps changing (60 at most while KWin ticks at 60 Hz). |
+| **peak frames/s** | | The busiest second: the real capture rate while something keeps changing (at most the negotiated max framerate, shown in the `PipeWire format: … max N/1 fps` line). |
 
 The two pen lines don't share the same pauses exactly (frames captured before the input don't count for "capture tick"), but their medians add up: input → tick + tick → sent ≈ input → encoded + send.
 
@@ -89,7 +90,10 @@ The two pen lines don't share the same pauses exactly (frames captured before th
 | 2026-10-30 | MacBook Pro 16" (t2linux 7.2.11, KDE 6.8.2) + iPad Air (60 Hz display) + Pencil Pro over **USB** (usbmuxd), 30 s of drawing, 6786 samples in 1729 batches | 8.62 / 16.33 / 16.66 ms (max 17.19) | 0.68 / 1.00 ms | 0.69 ms | **tested** (your run) |
 | 2026-10-30 | Phase 2 video, same setup, `--video virtual`, VA-API H.264 2360×1640, 20 Mbit/s: **encoder out → iPad received** | p50 1.1–1.8 ms, p95 2.5–3.7 ms (4546 frames) | | 0.5–1.0 ms | **tested** (your run). Excludes capture, encode, decode and display. |
 | 2026-10-31 | iPad Air **M4**, iPadOS 27, USB, KDE custom mode 2360×1640@120 (747–1135 frames per 10 s), **Metal, present at once** (round 1): received → decoded → on screen | decode 1.9 / 2.3 ms; **decoded → on screen 38–46 / 50–60 ms**; received → on screen 40–48 / 52; encoder out → on screen 41–49 / 53 (p50 / p95, about 10 windows); ≈ 50 % replaced by a newer frame | | | **tested** (your run). pen input → frame encoded also dropped to 17–21 ms p50 at 120 Hz (was 33). |
-| — | Same, Metal **display link** / **UI update link** (DECISIONS D21) | *to be measured: MORNING.md §13* | | | built but untested |
+| 2026-10-31 | Same iPad, **round 2: the three Metal presentation modes** (DECISIONS D21), decoded → on screen p50 | **display link 36–39 ms** (best; the default now) · UI update link 45–52 ms · present at once 45–48 ms · AVSampleBufferDisplayLayer not measurable (felt worse earlier) | | | **tested** (your run). The UI update link's "one frame sooner" did not show up. |
+| 2026-10-31 | PC side, `--video-backend gstreamer`, Intel UHD 630, Virtual-ipad 2360×1640@120 | pen input → frame encoded **10.4–11.4 ms** p50; ~95–100 frames/s captured; encoder out → on screen 38–43 ms | | | **tested** (your run) |
+| 2026-10-31 | PC side, `--video-backend native` **round 1**, same | pen input → frame encoded **27–33 ms** p50; pen input → capture tick 14–18 ms; capture tick → daemon 0.8, convert 5.4–6.9, encode 6.0–6.8, send 0.5, tick → sent ≈ 13.5 ms (p95 17–20); **60** frames/s (capped by us); LINEAR buffer; encoder out → on screen 40–50 ms | | | **tested** (your run): works, but slower than gstreamer. Round 2 addresses the cap, the CPU waits and the tiling. |
+| 2026-10-31 | PC side, native, **AMD** Radeon Pro 5300M (`va_device = renderD129`), over Wi-Fi | KWin's Intel-rendered DMA-BUF can't be imported ("resource allocation failed"), so shared memory: capture tick → daemon 20–26 ms (KWin's CPU readback), convert ~12, encode ~31.6 ms (quality level 7 of 32: a slow preset, fixed in round 2), tick → sent 63–70 ms, 24 frames/s | | | **tested** (your run). AMD only makes sense if KWin renders on the AMD GPU. |
 | — | MacBook Pro 16" + iPad Air over **Wi-Fi** | *to be measured: MORNING.md step 9* | | | not measured |
 
 How to read the USB row:
