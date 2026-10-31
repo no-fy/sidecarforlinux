@@ -31,8 +31,11 @@ public extension PeerServerDelegate {
 /// queued for display. All calls happen on `PeerServer.queue`.
 public protocol VideoFrameSink: AnyObject {
     func configure(_ config: VideoConfig)
-    /// Returns false if the frame couldn't be queued for display.
-    func enqueue(_ frame: VideoFrame) -> Bool
+    /// Queue `frame` for display. Call `report` exactly once for it, from any
+    /// thread, once its fate is known: `decodedNs`/`displayedNs` on the
+    /// session clock (0 = unknown, or didn't happen), and `requestKeyframe`
+    /// if it couldn't be decoded. The PC turns these into latency stats.
+    func enqueue(_ frame: VideoFrame, receivedNs: UInt64, report: @escaping (VideoFeedback) -> Void)
     func reset()
 }
 
@@ -437,6 +440,14 @@ final class PeerConnection {
         if isActive { send(m) }
     }
 
+    /// Video sinks report from any thread (e.g. when a frame reached the screen).
+    private func sendFeedback(_ fb: VideoFeedback) {
+        server.queue.async { [weak self] in
+            guard let self, case .video = self.state else { return }
+            self.send(.videoFeedback(fb))
+        }
+    }
+
     private func receive() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, done, error in
             guard let self else { return }
@@ -494,14 +505,13 @@ final class PeerConnection {
             server.onMain { $0.videoConfigReceived(c) }
         case (.video, .videoFrame(let f)):
             videoStarted = true
-            var shown = true
             if let sink = server.videoSink {
-                shown = sink.enqueue(f)
+                sink.enqueue(f, receivedNs: receivedAt) { [weak self] fb in self?.sendFeedback(fb) }
             } else {
                 server.onMain { $0.videoFrameReceived(f) }
+                send(.videoFeedback(VideoFeedback(frameID: f.frameID, requestKeyframe: false, receivedNs: receivedAt,
+                                                  decodedNs: 0, displayedNs: 0)))
             }
-            send(.videoFeedback(VideoFeedback(frameID: f.frameID, requestKeyframe: !shown, receivedNs: receivedAt,
-                                              decodedNs: 0, displayedNs: 0)))
         case (.video, .ping(let p)):
             send(.pong(Pong(id: p.id, t1Ns: p.t1Ns, t2Ns: receivedAt, t3Ns: SessionClock.nowNs())))
         case (.video, _):

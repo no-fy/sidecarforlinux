@@ -2,9 +2,9 @@
 //
 // Frames arrive as AVCC/HVCC samples (4-byte big-endian NAL lengths) and
 // parameter sets arrive separately, so no Annex-B conversion is needed here.
-// `VideoFormat.sampleBuffer` feeds AVSampleBufferDisplayLayer (lowest
-// latency, DisplayImmediately); `VideoDecoder` decodes with
-// VTDecompressionSession (used by tests and for latency instrumentation).
+// `VideoFormat.sampleBuffer` feeds AVSampleBufferDisplayLayer
+// (DisplayImmediately) and both decoders: the synchronous `VideoDecoder`
+// below (tests) and `LowLatencyDecoder` (the Metal renderer).
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -61,6 +61,13 @@ public final class VideoFormat {
     /// Pixel size from the parameter sets (what the decoder will output).
     public var dimensions: CMVideoDimensions {
         CMVideoFormatDescriptionGetDimensions(formatDescription)
+    }
+
+    /// The stream says its samples use 0–255 (VUI video_full_range_flag);
+    /// otherwise they use the usual 16–235 video range.
+    public var isFullRange: Bool {
+        CMFormatDescriptionGetExtension(formatDescription,
+                                        extensionKey: kCMFormatDescriptionExtension_FullRangeVideo) as? Bool ?? false
     }
 
     /// One frame as a CMSampleBuffer. `displayImmediately` marks it for

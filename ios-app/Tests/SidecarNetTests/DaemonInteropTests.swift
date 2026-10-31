@@ -134,11 +134,15 @@ final class DaemonInteropTests: XCTestCase {
         XCTAssertTrue(repaired, "no pairing on reconnect")
         XCTAssertTrue(out2.contains("BTN_TOUCH 1"))
 
-        // ---- 3. video channel from the Rust daemon (file source), decoded here
+        // ---- 3. video channel from the Rust daemon (file source), decoded
+        // here and reported back with decode/display times, as the Metal
+        // renderer does
         let clip = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("protocol/vectors/test-176x144.h264")
         server = PeerServer(identity: ipad, trust: trust, usbPort: port)
+        let sink3 = DecodeAndShowSink()
+        server.videoSink = sink3
         let delegate3 = await MainActor.run { RecordingDelegate() }
         await MainActor.run { server.delegate = delegate3 }
         server.start(wifi: false)
@@ -146,11 +150,17 @@ final class DaemonInteropTests: XCTestCase {
         let run3 = try launch(bin, ["run", "--once", "--dry-run", "--connect", "127.0.0.1:\(port)",
                                     "--video", "file:\(clip.path)"],
                               configDir: configDir, stdin: "")
-        try await waitUntil(15) { delegate3.videoFrames.count >= 16 }
+        try await waitUntil(15) { sink3.frames.value.count >= 16 }
+        // Past the daemon's 10 s report, which breaks down the iPad side.
+        try await Task.sleep(nanoseconds: 11_000_000_000)
         server.stop()
         try await waitExit(run3.process)
-        print("---- daemon output (video run) ----\n\(run3.text())")
-        let (configs, frames) = await MainActor.run { (delegate3.videoConfigs, delegate3.videoFrames) }
+        let out3 = run3.text()
+        print("---- daemon output (video run) ----\n\(out3)")
+        XCTAssertTrue(out3.contains("video on the iPad (p50/p95 ms"), "daemon logs the iPad's decode/display times")
+        XCTAssertTrue(out3.contains("| decoded -> on screen "))
+        XCTAssertFalse(out3.contains("decode n/a"), "decode times arrived")
+        let (configs, frames) = (sink3.configs.value, sink3.frames.value)
         let decoder = VideoDecoder()
         try decoder.configure(try XCTUnwrap(configs.first))
         var decoded = 0
