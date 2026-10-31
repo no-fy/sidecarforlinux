@@ -193,10 +193,11 @@ final class LayerVideoTests: XCTestCase {
         w.changes = 30
         for v in [40, 42, 50] { w.add(receivedToScreenNs: UInt64(v) * ms, match: .exact) }
         w.add(receivedToScreenNs: 38 * ms, match: .afterPause)
+        w.pollCostUs = [300, 500, 2100]
         let s = try XCTUnwrap(w.summary(seconds: 1, extra: ["layer: 60 frames, 0 dropped", "copy 420v 2360×1640"]))
         XCTAssertEqual(s, "AVSampleBufferDisplayLayer: received → screen 42.0/50.0 ms (±1 refresh) · 3 matched/s · "
-                          + "after a pause 38.0 ms (1) · 2/60 refreshes without a picture · layer: 60 frames, 0 dropped · "
-                          + "copy 420v 2360×1640")
+                          + "after a pause 38.0 ms (1) · 2/60 refreshes without a picture · poll 0.5/2.1 ms · "
+                          + "layer: 60 frames, 0 dropped · copy 420v 2360×1640")
     }
 
     func testLayerMetricsDeltas() {
@@ -225,10 +226,13 @@ final class LayerVideoTests: XCTestCase {
         let log = FeedbackLog()
         sink.configure(config)
         sink.setMeasuring(true)
+        var pollMs: [Double] = []
         func refresh(_ n: Int) {
             for _ in 0..<n {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.016))
-                sink.pollDisplayed(atNs: SessionClock.nowNs())
+                let t0 = SessionClock.nowNs()
+                sink.pollDisplayed(atNs: t0)
+                pollMs.append(Double(SessionClock.nowNs() - t0) / 1e6)
             }
         }
         for f in frames {
@@ -239,7 +243,10 @@ final class LayerVideoTests: XCTestCase {
         sink.setMeasuring(false)  // reports whatever is still open
         let fb = log.all
         let shown = fb.filter { $0.displayedNs != 0 }
-        print("AVSampleBufferDisplayLayer on macOS: \(fb.count)/\(frames.count) reported, \(shown.count) with a display time")
+        let sorted = pollMs.sorted()
+        print("AVSampleBufferDisplayLayer on macOS: \(fb.count)/\(frames.count) reported, \(shown.count) with a display time; "
+              + String(format: "pollDisplayed p50 %.2f ms, max %.2f ms over %d polls",
+                       sorted[sorted.count / 2], sorted.last ?? 0, sorted.count))
         for r in readouts.value { print("  readout: \(r)") }
         XCTAssertEqual(fb.count, frames.count, "every frame reported")
         XCTAssertEqual(Set(fb.map(\.frameID)).count, fb.count, "and only once")

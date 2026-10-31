@@ -131,10 +131,13 @@ public final class DisplayMatcher: @unchecked Sendable {
     }
 
     /// One display refresh: the fingerprint of the picture the layer shows
-    /// (nil: it gave none), at `atNs` (session clock).
-    public func observed(fingerprint: UInt64?, atNs: UInt64) {
+    /// (nil: it gave none), at `atNs` (session clock). `costNs`: how long
+    /// asking the layer took (if it's not well under a refresh, "±1 refresh"
+    /// doesn't hold).
+    public func observed(fingerprint: UInt64?, atNs: UInt64, costNs: UInt64 = 0) {
         lock.lock()
         window.polls += 1
+        if costNs > 0 { window.pollCostUs.append(UInt32(min(costNs / 1000, UInt64(UInt32.max)))) }
         var out: Out = []
         if let fp = fingerprint {
             if fp != shown {
@@ -241,6 +244,8 @@ public struct LayerWindow {
     public var nilPolls = 0
     public var changes = 0
     public var unmatched = 0
+    /// How long each poll of the layer took (displayedPixelBuffer + fingerprint).
+    public var pollCostUs: [UInt32] = []
     public private(set) var exactUs: [UInt32] = []
     public private(set) var afterPauseUs: [UInt32] = []
 
@@ -279,6 +284,9 @@ public struct LayerWindow {
             if unmatched > 0 { parts.append("\(unmatched) changes unmatched") }
         }
         if nilPolls > 0 && nilPolls < polls { parts.append("\(nilPolls)/\(polls) refreshes without a picture") }
+        if !pollCostUs.isEmpty {
+            parts.append("poll \(ms(pct(pollCostUs, 50)))/\(ms(pollCostUs.max() ?? 0)) ms")
+        }
         return (parts + extra).joined(separator: " · ")
     }
 }
@@ -403,6 +411,7 @@ public final class LayerVideoSink: VideoFrameSink, @unchecked Sendable {
     /// Once per display refresh, `atNs` = that refresh (session clock).
     public func pollDisplayed(atNs: UInt64) {
         guard isMeasuring else { return }
+        let start = SessionClock.nowNs()
         var fp: UInt64?
         if #available(macOS 14.4, *) {
             if let pb = renderer.displayedPixelBuffer() {
@@ -414,7 +423,7 @@ public final class LayerVideoSink: VideoFrameSink, @unchecked Sendable {
                 lock.unlock()
             }
         }
-        matcher.observed(fingerprint: fp, atNs: atNs)
+        matcher.observed(fingerprint: fp, atNs: atNs, costNs: max(1, SessionClock.nowNs() - start))
         publishIfDue(nowNs: atNs)
     }
 
