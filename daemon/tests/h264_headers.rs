@@ -18,12 +18,13 @@ fn slice(header: (Vec<u8>, usize)) -> Vec<u8> {
     b
 }
 
-fn stream(profile: Profile) -> Vec<u8> {
+fn stream(profile: Profile, slice_qp_delta: i8) -> Vec<u8> {
     let s = StreamParams {
         profile,
         level_idc: 51,
         width: 2360,
         height: 1640,
+        slice_qp_delta,
     };
     let mut g = Gop::default();
     let mut out = Vec::new();
@@ -75,8 +76,14 @@ fn values(log: &str, field: &str) -> Vec<i64> {
 
 #[test]
 fn ffmpeg_parses_our_headers() {
-    for profile in [Profile::High, Profile::Main, Profile::ConstrainedBaseline] {
-        let Some(log) = trace(&stream(profile)) else {
+    for (profile, qpd) in [
+        (Profile::High, 0),
+        (Profile::Main, 0),
+        (Profile::ConstrainedBaseline, 0),
+        // Constant QP 24 (the LP encoder without rate control).
+        (Profile::High, -2),
+    ] {
+        let Some(log) = trace(&stream(profile, qpd)) else {
             return;
         };
         let bad: Vec<&str> = log
@@ -124,6 +131,6 @@ fn ffmpeg_parses_our_headers() {
         assert_eq!(values(&log, "slice_type"), vec![2, 0, 0, 2], "{log}");
         assert_eq!(values(&log, "frame_num"), vec![0, 1, 2, 0]);
         assert_eq!(values(&log, "idr_pic_id"), vec![0, 1]);
-        assert_eq!(values(&log, "slice_qp_delta"), vec![0, 0, 0, 0]);
+        assert_eq!(values(&log, "slice_qp_delta"), vec![qpd as i64; 4]);
     }
 }

@@ -343,6 +343,7 @@ struct VideoPlan {
     fps: u32,
     max_fps: u32,
     target_usage: u8,
+    qp: u8,
     /// Virtual monitor pixel density; 0 = the iPad's.
     scale: f64,
 }
@@ -376,6 +377,7 @@ impl VideoPlan {
             max_fps: self.max_fps,
             kbps: self.kbps,
             target_usage: self.target_usage,
+            qp: self.qp,
             encoder: self.encoder,
             kind,
         })
@@ -402,6 +404,7 @@ impl VideoPlan {
             fps: env.cfg.video.fps.max(1),
             max_fps: env.cfg.video.max_fps,
             target_usage: env.cfg.video.target_usage,
+            qp: env.cfg.video.qp,
             scale: env.cfg.video.scale,
         }
     }
@@ -603,10 +606,22 @@ async fn one_session(
         let mut started = tokio::time::Instant::now();
         let mut backoff = Duration::from_secs(1);
         let mut last_err: Option<String> = None;
+        // Set when the video configuration can never work: no retries.
+        let mut video_off = false;
         loop {
             tokio::select! {
                 r = &mut input => break r,
-                v = &mut video_fut => {
+                v = &mut video_fut, if !video_off => {
+                    if let Err(e) = &v {
+                        if sidecard::native::is_unsupported(e) {
+                            tracing::error!(
+                                "video channel: {e:#}. Video stays off until the iPad reconnects; \
+                                 change [video] in config.toml (backend = \"gstreamer\" always works)"
+                            );
+                            video_off = true;
+                            continue;
+                        }
+                    }
                     match v {
                         Ok(st) => tracing::info!(
                             "video channel ended after {} frames; encoder -> iPad p50 {:.1} ms p95 {:.1} ms ({} samples)",

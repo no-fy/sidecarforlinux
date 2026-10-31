@@ -66,8 +66,13 @@ encoder = "vaapi"
 # encode H.264 (the one gst's vah264enc uses), e.g. "/dev/dri/renderD129".
 va_device = ""
 # VA-API speed/quality trade-off: 1 = best quality ... 7 = fastest (lowest
-# latency).
+# latency). The native backend maps it onto the driver's own range (Intel
+# has 7 levels, AMD 32; 7 is always the fastest).
 target_usage = 7
+# native backend: constant QP (1-51, lower = sharper and more bits) instead
+# of CBR at bitrate_kbps. 0 = CBR when the encoder has it, else QP 24 (Intel's
+# low-power encoder, vaapi-lp, has no CBR without the HuC firmware).
+qp = 0
 # Pixel density of the virtual monitor. 0 = the iPad's own (2 = sharp). Lower
 # (e.g. 1.5) means fewer pixels to render, encode and decode: less latency,
 # softer picture.
@@ -101,6 +106,7 @@ pub struct VideoCfg {
     pub encoder: String,
     pub va_device: String,
     pub target_usage: u8,
+    pub qp: u8,
     pub scale: f64,
     pub bitrate_kbps: u32,
     pub fps: u32,
@@ -115,6 +121,7 @@ impl Default for VideoCfg {
             encoder: "vaapi".into(),
             va_device: String::new(),
             target_usage: 7,
+            qp: 0,
             scale: 0.0,
             bitrate_kbps: 20000,
             fps: 60,
@@ -250,6 +257,9 @@ impl Config {
         }
         if self.video.backend == "native" && self.video.encoder == "x264" {
             bail!("video.backend = \"native\" encodes with VA-API: use encoder = \"vaapi\" or \"vaapi-lp\" (or backend = \"hybrid\" for x264)");
+        }
+        if self.video.qp > 51 {
+            bail!("video.qp must be 0 (CBR) or 1-51");
         }
         if !(1..=7).contains(&self.video.target_usage) {
             bail!("video.target_usage must be 1 (best quality) to 7 (fastest)");
