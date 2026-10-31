@@ -365,12 +365,12 @@ How to read the new lines: [latency.md → Where the PC's time goes](latency.md#
 
 ## 15. Second-screen lag, round 3: native backend round 2 (A/B/C, 15 min) → **paste back**
 
-Round 2 lets KWin capture at the output's refresh rate (it was capped at 60 by us), overlaps colour conversion with encoding, prefers tiled buffers, and runs Intel's low-power encoder with constant QP. Your saved Virtual-ipad mode (2360×1640@120) stays as it is. Nothing new to install.
+Round 2 lets KWin capture at the output's refresh rate (it was capped at 60 by us), overlaps colour conversion with encoding, prefers tiled buffers, and runs Intel's low-power encoder with constant QP. Your saved Virtual-ipad mode (2360×1640@120) stays as it is. No new packages.
 
-1. **Daemon from the branch:**
+1. **Daemon from `main`** (round 2 is merged):
 
    ```bash
-   git fetch origin && git switch feature/native-video-round2 && scripts/install-daemon.sh
+   git switch main && git pull && scripts/install-daemon.sh
    systemctl --user stop sidecard 2>/dev/null
    ```
 
