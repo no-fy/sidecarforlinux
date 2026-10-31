@@ -396,10 +396,10 @@ async fn produce_native(
         NativeKind::Hybrid => {
             let mut args = encoder_args(spec.encoder, spec.kbps, spec.target_usage);
             args.extend(tail(spec.fps));
-            let (fps, out) = (spec.fps, ev_tx.clone());
+            let fps = spec.fps;
             Capture::spawn(
                 cap,
-                move || {
+                move |out| {
                     Ok(
                         Box::new(crate::native::hybrid::GstPipeSink::new(args, fps, out))
                             as Box<dyn crate::native::frame::FrameSink>,
@@ -419,9 +419,11 @@ async fn produce_native(
             };
             Capture::spawn(
                 cap,
-                move || {
-                    Ok(Box::new(crate::native::encoder::VaEncoder::open(opts)?)
-                        as Box<dyn crate::native::frame::FrameSink>)
+                move |out| {
+                    Ok(
+                        Box::new(crate::native::encoder::VaEncoder::open(opts, out)?)
+                            as Box<dyn crate::native::frame::FrameSink>,
+                    )
                 },
                 ev_tx,
             )?

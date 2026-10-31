@@ -18,13 +18,15 @@ use super::frame::{
     DRM_FORMAT_MOD_LINEAR, DRM_XBGR8888, DRM_XRGB8888,
 };
 use super::h264::{level_for, Gop, PicPlan, Profile, StreamParams};
+use super::pw::{EndError, Event};
 use super::stats::StageTimes;
-use super::va::{Buffer, Config, Context, Display, Surface};
+use super::va::{Buffer, Config, Context, Display, Dpy, Surface};
 use super::va_sys as sys;
 use super::Unsupported;
 use crate::clock::now_ns;
 use anyhow::{anyhow, bail, Context as _, Result};
 use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub struct VaOptions {
@@ -331,24 +333,162 @@ fn packed(
     Ok(())
 }
 
+/// Frames in flight on the GPU at once: frame N+1's colour conversion runs
+/// while frame N encodes (different engines).
+pub const DEPTH: usize = 2;
+/// Reconstructed pictures: with two encodes in flight, the one being
+/// written, its reference, and the next one's target must all differ.
+const RECON: usize = 3;
+
+/// Which reconstructed picture encode number `k` writes, and which one it
+/// references (the previous encode's).
+pub fn recon_slots(k: u64) -> (usize, usize) {
+    (
+        (k % RECON as u64) as usize,
+        ((k + RECON as u64 - 1) % RECON as u64) as usize,
+    )
+}
+
 /// Per picture size: the encode context and its surfaces. Field order is
-/// drop order: the coded buffer before its context, the context before its
+/// drop order: coded buffers before their context, the context before its
 /// config.
 struct Session {
-    coded: Buffer,
+    coded: [Buffer; DEPTH],
     ctx: Context,
     _config: Config,
-    /// VPP output = encoder input, NV12 at the picture size.
-    input: Surface,
-    /// Reconstructed pictures (16-aligned): current and reference.
-    recon: [Surface; 2],
+    /// VPP output = encoder input, NV12 at the picture size, alternating so
+    /// the next conversion doesn't overwrite a picture being encoded.
+    inputs: [Surface; 2],
+    /// Reconstructed pictures (16-aligned).
+    recon: [Surface; RECON],
     params: StreamParams,
     /// Frame rate for the level and the rate control's per-frame budget.
     fps: u32,
     gop: Gop,
-    cur: usize,
+    /// Encodes submitted in this session (picks recon and coded slots).
+    count: u64,
+    /// The input surface with the newest picture.
+    last_input: Option<usize>,
     /// The previous picture (the reference for the next P frame).
     last: Option<PicPlan>,
+}
+
+/// An encode the completion thread waits for.
+struct Job {
+    input: sys::VASurfaceID,
+    coded: sys::VABufferID,
+    width: u32,
+    height: u32,
+    times: StageTimes,
+}
+
+/// The completion thread and the count of encodes in flight.
+struct Completion {
+    jobs: Option<std::sync::mpsc::Sender<Job>>,
+    in_flight: std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Waits for one encode; returns when it finished and its bytes.
+type Worker = Box<dyn FnMut(&Job) -> Result<(u64, Vec<u8>)> + Send>;
+
+impl Completion {
+    fn start(dpy: Dpy, out: mpsc::Sender<Event>) -> Result<Completion> {
+        // Encode done when the GPU no longer reads its input (as FFmpeg's
+        // VA-API encoder waits), then read the bytes.
+        Self::start_with(
+            out,
+            Box::new(move |job: &Job| {
+                dpy.sync_surface(job.input)?;
+                let t = now_ns();
+                Ok((t, dpy.read_coded(job.coded)?))
+            }),
+        )
+    }
+
+    fn start_with(out: mpsc::Sender<Event>, mut work: Worker) -> Result<Completion> {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let in_flight =
+            std::sync::Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+        let flight = in_flight.clone();
+        let thread = std::thread::Builder::new()
+            .name("sidecard-va-done".into())
+            .spawn(move || {
+                let mut closed = false;
+                for job in rx {
+                    let ev = match work(&job) {
+                        Ok((t, annexb)) => {
+                            let mut times = job.times;
+                            times.encoded_ns = t;
+                            Event::Frame(Encoded {
+                                annexb,
+                                width: job.width,
+                                height: job.height,
+                                times,
+                            })
+                        }
+                        Err(e) => Event::Ended(Err(EndError::transient(format!(
+                            "VA H.264 encode: {e:#}"
+                        )))),
+                    };
+                    if !closed && out.blocking_send(ev).is_err() {
+                        closed = true; // keep draining so nobody waits forever
+                    }
+                    let (n, cv) = &*flight;
+                    *n.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+                    cv.notify_all();
+                }
+            })
+            .context("starting the VA completion thread")?;
+        Ok(Completion {
+            jobs: Some(tx),
+            in_flight,
+            thread: Some(thread),
+        })
+    }
+
+    /// Wait until fewer than `max` encodes are in flight.
+    fn wait_below(&self, max: usize) -> Result<()> {
+        let (n, cv) = &*self.in_flight;
+        let g = n.lock().unwrap_or_else(|e| e.into_inner());
+        let (g, t) = cv
+            .wait_timeout_while(g, std::time::Duration::from_secs(2), |n| *n >= max)
+            .unwrap_or_else(|e| e.into_inner());
+        if t.timed_out() && *g >= max {
+            bail!("the GPU has not finished an encode for 2 s");
+        }
+        Ok(())
+    }
+
+    fn submitted(&self) {
+        *self.in_flight.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    }
+
+    fn cancelled(&self) {
+        let (n, cv) = &*self.in_flight;
+        *n.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        cv.notify_all();
+    }
+
+    fn send(&self, job: Job) {
+        if let Some(tx) = &self.jobs {
+            if tx.send(job).is_err() {
+                self.cancelled();
+            }
+        }
+    }
+}
+
+impl Drop for Completion {
+    fn drop(&mut self) {
+        if let Err(e) = self.wait_below(1) {
+            tracing::warn!("closing the encoder with work in flight: {e:#}");
+        }
+        self.jobs = None;
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,6 +532,9 @@ fn import_key(
 }
 
 pub struct VaEncoder {
+    /// First: dropping it waits for the GPU and joins the thread before
+    /// any surface, buffer or the display goes away.
+    completion: Completion,
     session: Option<Session>,
     /// Imported compositor buffers (KWin cycles through 2-4).
     imported: Vec<(ImportKey, Surface)>,
@@ -407,8 +550,6 @@ pub struct VaEncoder {
     has_packed_attr: bool,
     quality_levels: u32,
     formats: Vec<(u32, Vec<u64>)>,
-    pending: Option<StageTimes>,
-    have_picture: bool,
     import_logged: bool,
     display: Display,
 }
@@ -421,7 +562,9 @@ fn h264_profile(d: &Display, ep: sys::VAEntrypoint) -> Option<Profile> {
 }
 
 impl VaEncoder {
-    pub fn open(opts: VaOptions) -> Result<VaEncoder> {
+    /// Open the encoder; encoded frames go to `out` (from the completion
+    /// thread).
+    pub fn open(opts: VaOptions, out: mpsc::Sender<Event>) -> Result<VaEncoder> {
         let ep = if opts.low_power {
             sys::VAEntrypointEncSliceLP
         } else {
@@ -565,7 +708,9 @@ impl VaEncoder {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        let completion = Completion::start(display.handle(), out)?;
         Ok(VaEncoder {
+            completion,
             session: None,
             imported: Vec::new(),
             upload: None,
@@ -579,8 +724,6 @@ impl VaEncoder {
             has_packed_attr: packed_attr.is_some(),
             quality_levels,
             formats,
-            pending: None,
-            have_picture: false,
             import_logged: false,
             display,
         })
@@ -593,6 +736,8 @@ impl VaEncoder {
             .as_ref()
             .is_some_and(|s| (s.params.width, s.params.height, s.fps) == (width, height, fps));
         if !fits {
+            // Nothing may still read the old session's surfaces.
+            self.completion.wait_below(1)?;
             self.session = None;
             let d = &self.display;
             let level = level_for(self.profile, width, height, fps, self.opts.kbps).unwrap_or(62);
@@ -624,14 +769,16 @@ impl VaEncoder {
                 .config(va_profile(self.profile), self.entrypoint, &attrs)
                 .context("H.264 encode config")?;
             let nv12 = |w, h| d.surface(sys::VA_RT_FORMAT_YUV420, sys::VA_FOURCC_NV12, w, h, None);
-            let input = nv12(width, height)?;
-            let recon = [nv12(aw, ah)?, nv12(aw, ah)?];
+            let inputs = [nv12(width, height)?, nv12(width, height)?];
+            let recon = [nv12(aw, ah)?, nv12(aw, ah)?, nv12(aw, ah)?];
+            let ids: Vec<_> = recon.iter().map(|r| r.id).collect();
             let ctx = d
-                .context(&config, aw, ah, &[recon[0].id, recon[1].id])
+                .context(&config, aw, ah, &ids)
                 .context("H.264 encode context")?;
-            let coded = d.coded_buffer(&ctx, (aw * ah * 3 / 2) as usize + (64 << 10))?;
+            let size = (aw * ah * 3 / 2) as usize + (64 << 10);
+            let coded = [d.coded_buffer(&ctx, size)?, d.coded_buffer(&ctx, size)?];
             tracing::info!(
-                "VA-API encoding {width}x{height} (coded {aw}x{ah}) for up to {fps} frames/s, level {}.{}, {}, quality level {} of {} (target_usage {}), IDR on request",
+                "VA-API encoding {width}x{height} (coded {aw}x{ah}) for up to {fps} frames/s, level {}.{}, {}, quality level {} of {} (target_usage {}), IDR on request, {DEPTH} frames in flight",
                 level / 10,
                 level % 10,
                 match self.rate_control {
@@ -646,15 +793,15 @@ impl VaEncoder {
                 coded,
                 ctx,
                 _config: config,
-                input,
+                inputs,
                 recon,
                 params,
                 fps,
                 gop: Gop::default(),
-                cur: 0,
+                count: 0,
+                last_input: None,
                 last: None,
             });
-            self.have_picture = false;
         }
         Ok(self.session.as_mut().unwrap())
     }
@@ -730,8 +877,8 @@ impl VaEncoder {
         Ok(id)
     }
 
-    /// RGB → NV12 (BT.709, limited range) into the session's input surface.
-    fn vpp(&self, src: sys::VASurfaceID) -> Result<()> {
+    /// Queue RGB → NV12 (BT.709, limited range) into input surface `i`.
+    fn submit_vpp(&self, src: sys::VASurfaceID, i: usize) -> Result<()> {
         let s = self.session.as_ref().unwrap();
         let p = sys::VAProcPipelineParameterBuffer {
             surface: src,
@@ -756,8 +903,103 @@ impl VaEncoder {
             .display
             .param(&self.vpp_ctx, sys::VAProcPipelineParameterBufferType, &p)?;
         self.display
-            .run(&self.vpp_ctx, &s.input, &[buf])
+            .submit(&self.vpp_ctx, &s.inputs[i], &[buf])
             .context("VA video processing (RGB -> NV12)")
+    }
+
+    /// Queue the encode of input surface `i`; returns the job to wait for.
+    fn submit_encode(&mut self, i: usize, force_idr: bool, times: StageTimes) -> Result<Job> {
+        let rc = self.rate_control;
+        let (packed_flags, kbps, quality, levels) = (
+            self.packed,
+            self.opts.kbps,
+            self.opts.target_usage,
+            self.quality_levels,
+        );
+        let d = &self.display;
+        let s = self.session.as_mut().ok_or_else(|| anyhow!("no session"))?;
+        let plan = s.gop.next(force_idr);
+        let (cur, prev) = recon_slots(s.count);
+        let target = s.recon[cur].id;
+        let reference = s.last.map(|p| (s.recon[prev].id, p));
+        let coded = s.coded[(s.count % DEPTH as u64) as usize].id;
+        let mut bufs: Vec<Buffer> = Vec::new();
+        if plan.idr {
+            bufs.push(d.param(
+                &s.ctx,
+                sys::VAEncSequenceParameterBufferType,
+                &seq_param(&s.params, kbps),
+            )?);
+            if rc == RateControl::Cbr {
+                bufs.push(d.misc(
+                    &s.ctx,
+                    sys::VAEncMiscParameterTypeRateControl,
+                    &rate_control(kbps),
+                )?);
+                bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeHRD, &hrd(kbps))?);
+            }
+            let fr = sys::VAEncMiscParameterFrameRate {
+                framerate: s.fps,
+                ..Default::default()
+            };
+            bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeFrameRate, &fr)?);
+            if levels > 1 {
+                let q = sys::VAEncMiscParameterBufferQualityLevel {
+                    quality_level: quality_level(quality, levels),
+                    ..Default::default()
+                };
+                bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeQualityLevel, &q)?);
+            }
+            if packed_flags & sys::VA_ENC_PACKED_HEADER_SEQUENCE != 0 {
+                // SPS + PPS in one packed sequence header, as FFmpeg does.
+                let (mut sps, sb) = s.params.sps();
+                let (pps, pb) = s.params.pps();
+                sps.extend(pps);
+                packed(
+                    d,
+                    &s.ctx,
+                    sys::VAEncPackedHeaderSequence,
+                    (sps, sb + pb),
+                    &mut bufs,
+                )?;
+            }
+        }
+        bufs.push(d.param(
+            &s.ctx,
+            sys::VAEncPictureParameterBufferType,
+            &pic_param(&s.params, &plan, target, reference, coded),
+        )?);
+        if packed_flags & sys::VA_ENC_PACKED_HEADER_SLICE != 0 {
+            packed(
+                d,
+                &s.ctx,
+                sys::VAEncPackedHeaderSlice,
+                s.params.slice_header(&plan),
+                &mut bufs,
+            )?;
+        }
+        bufs.push(d.param(
+            &s.ctx,
+            sys::VAEncSliceParameterBufferType,
+            &slice_param(&s.params, &plan, reference),
+        )?);
+        self.completion.submitted();
+        if let Err(e) = d.submit(&s.ctx, &s.inputs[i], &bufs) {
+            self.completion.cancelled();
+            return Err(e.context("VA H.264 encode"));
+        }
+        // Parameter buffers can go now (FFmpeg frees them right after
+        // vaEndPicture too).
+        drop(bufs);
+        s.last = Some(plan);
+        s.count += 1;
+        Ok(Job {
+            input: s.inputs[i].id,
+            coded,
+            width: s.params.width,
+            height: s.params.height,
+            times,
+        })
     }
 }
 
@@ -770,7 +1012,12 @@ impl FrameSink for VaEncoder {
         self.imported.clear();
     }
 
-    fn convert(&mut self, frame: &Frame) -> Result<Converted> {
+    fn wait_ready(&mut self) -> Result<()> {
+        self.completion.wait_below(DEPTH)
+    }
+
+    fn push(&mut self, frame: &Frame, force_idr: bool) -> Result<Converted> {
+        self.wait_ready()?;
         self.session(frame.width, frame.height, frame.max_fps)?;
         let src = match frame.pixels {
             Pixels::DmaBuf {
@@ -820,113 +1067,48 @@ impl FrameSink for VaEncoder {
                 s.id
             }
         };
-        self.vpp(src)?;
+        let dpy = self.display.handle();
         let mut times = frame.times;
-        times.converted_ns = now_ns();
-        self.pending = Some(times);
-        self.have_picture = true;
+        // Ready: KWin's own GPU render into the buffer has finished (the
+        // DMA-BUF's implicit fence), or our upload is in.
+        dpy.sync_surface(src)
+            .context("waiting for the compositor's render")?;
+        times.ready_ns = now_ns();
+        // Convert into the input surface the in-flight encode isn't reading,
+        // then queue the encode right behind it: no CPU wait in between.
+        let i = self
+            .session
+            .as_ref()
+            .and_then(|s| s.last_input)
+            .map_or(0, |l| 1 - l);
+        self.submit_vpp(src, i)?;
+        let mut job = self.submit_encode(i, force_idr, times)?;
+        // The conversion has read the compositor's buffer once the GPU is
+        // done with it: then KWin can have it back.
+        let synced = dpy.sync_surface(src);
+        job.times.converted_ns = now_ns();
+        self.session.as_mut().unwrap().last_input = Some(i);
+        // Hand the job over even if that wait failed: it is in flight.
+        self.completion.send(job);
+        synced.context("VA video processing (RGB -> NV12)")?;
         Ok(Converted::Done)
     }
 
-    fn encode(&mut self, force_idr: bool) -> Result<Option<Encoded>> {
-        let mut times = match self.pending.take() {
-            Some(t) => t,
-            // Idle keyframe or keep-alive: re-encode the last picture.
-            None if self.have_picture => {
-                let n = now_ns();
-                StageTimes {
-                    arrived_ns: n,
-                    converted_ns: n,
-                    repeat: true,
-                    ..Default::default()
-                }
-            }
-            None => return Ok(None),
+    fn repeat(&mut self, force_idr: bool) -> Result<bool> {
+        let Some(i) = self.session.as_ref().and_then(|s| s.last_input) else {
+            return Ok(false);
         };
-        let rc = self.rate_control;
-        let (packed_flags, kbps, quality, levels) = (
-            self.packed,
-            self.opts.kbps,
-            self.opts.target_usage as u32,
-            self.quality_levels,
-        );
-        let d = &self.display;
-        let s = self.session.as_mut().ok_or_else(|| anyhow!("no session"))?;
-        let plan = s.gop.next(force_idr);
-        let target = s.recon[s.cur].id;
-        let reference = s.last.map(|p| (s.recon[1 - s.cur].id, p));
-        let mut bufs: Vec<Buffer> = Vec::new();
-        if plan.idr {
-            bufs.push(d.param(
-                &s.ctx,
-                sys::VAEncSequenceParameterBufferType,
-                &seq_param(&s.params, kbps),
-            )?);
-            if rc == RateControl::Cbr {
-                bufs.push(d.misc(
-                    &s.ctx,
-                    sys::VAEncMiscParameterTypeRateControl,
-                    &rate_control(kbps),
-                )?);
-                bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeHRD, &hrd(kbps))?);
-            }
-            let fr = sys::VAEncMiscParameterFrameRate {
-                framerate: s.fps,
-                ..Default::default()
-            };
-            bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeFrameRate, &fr)?);
-            if levels > 1 {
-                let q = sys::VAEncMiscParameterBufferQualityLevel {
-                    quality_level: quality_level(quality as u8, levels),
-                    ..Default::default()
-                };
-                bufs.push(d.misc(&s.ctx, sys::VAEncMiscParameterTypeQualityLevel, &q)?);
-            }
-            if packed_flags & sys::VA_ENC_PACKED_HEADER_SEQUENCE != 0 {
-                // SPS + PPS in one packed sequence header, as FFmpeg does.
-                let (mut sps, sb) = s.params.sps();
-                let (pps, pb) = s.params.pps();
-                sps.extend(pps);
-                packed(
-                    d,
-                    &s.ctx,
-                    sys::VAEncPackedHeaderSequence,
-                    (sps, sb + pb),
-                    &mut bufs,
-                )?;
-            }
-        }
-        bufs.push(d.param(
-            &s.ctx,
-            sys::VAEncPictureParameterBufferType,
-            &pic_param(&s.params, &plan, target, reference, s.coded.id),
-        )?);
-        if packed_flags & sys::VA_ENC_PACKED_HEADER_SLICE != 0 {
-            packed(
-                d,
-                &s.ctx,
-                sys::VAEncPackedHeaderSlice,
-                s.params.slice_header(&plan),
-                &mut bufs,
-            )?;
-        }
-        bufs.push(d.param(
-            &s.ctx,
-            sys::VAEncSliceParameterBufferType,
-            &slice_param(&s.params, &plan, reference),
-        )?);
-        d.run(&s.ctx, &s.input, &bufs).context("VA H.264 encode")?;
-        drop(bufs);
-        let annexb = d.read_coded(&s.coded)?;
-        s.last = Some(plan);
-        s.cur = 1 - s.cur;
-        times.encoded_ns = now_ns();
-        Ok(Some(Encoded {
-            annexb,
-            width: s.params.width,
-            height: s.params.height,
-            times,
-        }))
+        self.wait_ready()?;
+        let n = now_ns();
+        let times = StageTimes {
+            arrived_ns: n,
+            converted_ns: n,
+            repeat: true,
+            ..Default::default()
+        };
+        let job = self.submit_encode(i, force_idr, times)?;
+        self.completion.send(job);
+        Ok(true)
     }
 }
 
@@ -1010,6 +1192,122 @@ mod tests {
         let pic = pic_param(&p, &again, 10, Some((11, pf)), 99);
         assert_eq!(pic.ReferenceFrames[0].flags, sys::VA_PICTURE_H264_INVALID);
         assert_eq!(slice_param(&p, &again, Some((11, pf))).idr_pic_id, 1);
+    }
+
+    #[test]
+    fn recon_slots_never_overwrite_a_reference_in_flight() {
+        // With at most DEPTH encodes in flight, encode k writes a slot that
+        // neither its own reference nor encode k-1 (still running) uses.
+        for k in 1..20u64 {
+            let (cur, prev) = recon_slots(k);
+            let (cur_prev, _) = recon_slots(k - 1);
+            assert_eq!(prev, cur_prev, "k={k} references what k-1 wrote");
+            assert_ne!(cur, prev);
+            if k >= 2 {
+                let (_, prev_prev) = recon_slots(k - 1);
+                assert_ne!(cur, prev_prev, "k={k} must not overwrite k-1's reference");
+            }
+        }
+        assert_eq!(recon_slots(0), (0, 2));
+    }
+
+    fn job(id: u32) -> Job {
+        Job {
+            input: id,
+            coded: id,
+            width: 2,
+            height: 2,
+            times: StageTimes::default(),
+        }
+    }
+
+    #[test]
+    fn completion_delivers_in_order_and_limits_frames_in_flight() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let gate = Arc::new(AtomicBool::new(false));
+        let g = gate.clone();
+        let c = Completion::start_with(
+            tx,
+            Box::new(move |j: &Job| {
+                // The "GPU" holds the first job until the gate opens.
+                while j.input == 1 && !g.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Ok((u64::from(j.input), vec![j.input as u8]))
+            }),
+        )
+        .unwrap();
+        for i in 1..=DEPTH as u32 {
+            c.wait_below(DEPTH).unwrap();
+            c.submitted();
+            c.send(job(i));
+        }
+        // Full: a third frame has to wait.
+        let t = std::time::Instant::now();
+        let opener = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            gate.store(true, Ordering::SeqCst);
+        });
+        c.wait_below(DEPTH).unwrap();
+        assert!(t.elapsed() >= std::time::Duration::from_millis(40));
+        opener.join().unwrap();
+        c.submitted();
+        c.send(job(3));
+        drop(c); // waits for everything, joins the thread
+        let got: Vec<u8> = rt.block_on(async {
+            let mut v = Vec::new();
+            while let Some(Event::Frame(e)) = rx.recv().await {
+                assert_eq!(e.times.encoded_ns, u64::from(e.annexb[0]));
+                v.push(e.annexb[0]);
+            }
+            v
+        });
+        assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn completion_reports_a_failed_encode_and_keeps_going() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let c = Completion::start_with(
+            tx,
+            Box::new(|j: &Job| {
+                if j.input == 2 {
+                    bail!("GPU hang")
+                }
+                Ok((0, vec![]))
+            }),
+        )
+        .unwrap();
+        for i in 1..=3 {
+            c.wait_below(DEPTH).unwrap();
+            c.submitted();
+            c.send(job(i));
+        }
+        c.wait_below(1).unwrap(); // nothing stuck in flight
+        drop(c);
+        let kinds: Vec<String> = rt.block_on(async {
+            let mut v = Vec::new();
+            while let Some(e) = rx.recv().await {
+                v.push(match e {
+                    Event::Frame(_) => "frame".to_string(),
+                    Event::Ended(Err(e)) => format!("ended: {}", e.msg),
+                    other => format!("{other:?}"),
+                });
+            }
+            v
+        });
+        assert_eq!(
+            kinds,
+            vec!["frame", "ended: VA H.264 encode: GPU hang", "frame"]
+        );
     }
 
     #[test]

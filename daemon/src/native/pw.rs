@@ -89,10 +89,10 @@ pub struct Capture {
 
 impl Capture {
     /// Start capturing. `make_sink` runs on the capture thread (VA-API
-    /// objects never leave it).
+    /// objects are made there) and gets the channel for encoded frames.
     pub fn spawn<F>(spec: CaptureSpec, make_sink: F, out: mpsc::Sender<Event>) -> Result<Capture>
     where
-        F: FnOnce() -> Result<Box<dyn FrameSink>> + Send + 'static,
+        F: FnOnce(mpsc::Sender<Event>) -> Result<Box<dyn FrameSink>> + Send + 'static,
     {
         let (tx, rx) = pw::channel::channel::<Cmd>();
         std::thread::Builder::new()
@@ -346,7 +346,7 @@ struct State {
     last_frame_ns: u64,
     /// Daemon time of the last frame handed over (incl. repeats).
     last_sent_ns: u64,
-    /// A picture was converted (an idle keyframe can re-encode it).
+    /// A picture was pushed (an idle keyframe can re-encode it).
     have_picture: bool,
     out: mpsc::Sender<Event>,
     error: Option<anyhow::Error>,
@@ -361,18 +361,15 @@ impl State {
         }
     }
 
-    /// Encode and hand over. Blocks if the network side is slow: encoded
-    /// P-frames must not be dropped (the iPad's picture would break).
-    fn encode_and_send(&mut self, force_idr: bool) -> Result<()> {
-        // Always clear the request (a `||` would skip the take when forced).
-        let requested = std::mem::take(&mut self.keyframe);
-        let force = force_idr || requested;
-        if let Some(enc) = self.sink.encode(force)? {
-            self.out
-                .blocking_send(Event::Frame(enc))
-                .map_err(|_| anyhow!("video channel closed"))?;
-            self.last_sent_ns = now_ns();
+    /// Re-encode the last picture (idle keyframe or keep-alive).
+    fn repeat(&mut self, force_idr: bool) -> Result<()> {
+        // A sink that can't repeat (hybrid) won't later either: the request
+        // is cleared and the keep-alive clock restarts regardless.
+        self.sink.repeat(force_idr)?;
+        if force_idr {
+            self.keyframe = false;
         }
+        self.last_sent_ns = now_ns();
         Ok(())
     }
 }
@@ -464,6 +461,9 @@ fn on_format(st: &mut State, pod: &Pod) -> Result<Option<Vec<Vec<u8>>>> {
 
 /// Returns params to re-announce if an import failed.
 fn on_process(st: &mut State, stream: &pw::stream::Stream) -> Result<Option<Vec<Vec<u8>>>> {
+    // Wait for the encoder first, then take the newest buffer: a busy
+    // encoder starts on the newest picture, not one that waited for it.
+    st.sink.wait_ready()?;
     let arrived = now_ns();
     let (buf, stale) = newest_usable(std::iter::from_fn(|| stream.dequeue_buffer()), usable);
     let Some(mut buf) = buf else {
@@ -480,6 +480,8 @@ fn on_process(st: &mut State, stream: &pw::stream::Stream) -> Result<Option<Vec<
         stale_skipped: stale,
         ..Default::default()
     };
+    // Always take the request; restored below if nothing was encoded.
+    let force = std::mem::take(&mut st.keyframe);
     let converted = {
         let datas = buf.datas_mut();
         match fmt.modifier {
@@ -507,7 +509,7 @@ fn on_process(st: &mut State, stream: &pw::stream::Stream) -> Result<Option<Vec<
                     },
                     times,
                 };
-                st.sink.convert(&frame)?
+                st.sink.push(&frame, force)?
             }
             None => {
                 let d = &mut datas[0];
@@ -543,16 +545,19 @@ fn on_process(st: &mut State, stream: &pw::stream::Stream) -> Result<Option<Vec<
                     },
                     times,
                 };
-                st.sink.convert(&frame)?
+                st.sink.push(&frame, force)?
             }
         }
     };
-    // The sink has its own copy now: KWin can have the buffer back.
+    // The sink has read the pixels: KWin can have the buffer back.
     drop(buf);
+    if converted != Converted::Done {
+        st.keyframe |= force;
+    }
     match converted {
         Converted::Done => {
             st.have_picture = true;
-            st.encode_and_send(false)?;
+            st.last_sent_ns = now_ns();
             Ok(None)
         }
         Converted::Skipped(why) => {
@@ -585,10 +590,10 @@ fn run<F>(
     out: &mpsc::Sender<Event>,
 ) -> Result<()>
 where
-    F: FnOnce() -> Result<Box<dyn FrameSink>>,
+    F: FnOnce(mpsc::Sender<Event>) -> Result<Box<dyn FrameSink>>,
 {
     pw::init();
-    let sink = make_sink()?;
+    let sink = make_sink(out.clone())?;
     let book = ModifierBook::new(sink.dmabuf_formats());
     let mainloop = pw::main_loop::MainLoopRc::new(None).context("PipeWire main loop")?;
     let context = pw::context::ContextRc::new(&mainloop, None).context("PipeWire context")?;
@@ -690,9 +695,9 @@ where
             }
             let now = now_ns();
             let r = if s.keyframe && now.saturating_sub(s.last_frame_ns) >= IDLE_NS {
-                s.encode_and_send(true)
+                s.repeat(true)
             } else if s.last_sent_ns != 0 && now.saturating_sub(s.last_sent_ns) >= KEEPALIVE_NS {
-                s.encode_and_send(false)
+                s.repeat(false)
             } else {
                 Ok(())
             };

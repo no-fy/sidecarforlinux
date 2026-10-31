@@ -61,10 +61,11 @@ pub struct Frame<'a> {
     pub times: StageTimes,
 }
 
-/// What `FrameSink::convert` did with a frame.
+/// What `FrameSink::push` did with a frame.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Converted {
-    /// The sink has its own copy; the source may release the buffer.
+    /// The sink has read the pixels (into its own picture); the source may
+    /// release the buffer. The encoded frame follows on the sink's output.
     Done,
     /// Not usable (e.g. a format the sink can't take); nothing to encode.
     Skipped(String),
@@ -83,8 +84,10 @@ pub struct Encoded {
     pub times: StageTimes,
 }
 
-/// An encoder fed by a capture source. Two calls per frame so the source can
-/// give the compositor its buffer back between them.
+/// An encoder fed by a capture source. Sinks deliver encoded frames on the
+/// output channel they were made with (`pw::Event::Frame`), possibly from
+/// another thread: the VA-API encoder has two frames in flight, so frame
+/// N+1's colour conversion overlaps frame N's encode.
 pub trait FrameSink {
     /// DRM fourcc → modifiers this sink can import from DMA-BUFs (empty:
     /// SHM only). The source offers these to the compositor.
@@ -93,15 +96,22 @@ pub trait FrameSink {
     /// The source renegotiated: its buffers are new, forget cached imports.
     fn buffers_changed(&mut self) {}
 
-    /// Read the frame into the sink's own picture. When it returns, the
-    /// source may release the buffer.
-    fn convert(&mut self, frame: &Frame) -> anyhow::Result<Converted>;
+    /// Block until the sink can take another frame. The source calls this
+    /// before picking the newest buffer, so a busy encoder starts on the
+    /// newest picture rather than one that waited for it.
+    fn wait_ready(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 
-    /// Encode the last converted picture (an IDR if `force_idr`). Called
-    /// again without a new `convert`, it re-encodes the same picture
-    /// (`times.repeat`): idle keyframes and the keep-alive. `None` if
-    /// nothing was converted yet, or the sink encodes elsewhere (hybrid).
-    fn encode(&mut self, force_idr: bool) -> anyhow::Result<Option<Encoded>>;
+    /// Take a new picture and start encoding it (an IDR if `force_idr`).
+    /// When it returns the sink has read the source's pixels and the source
+    /// may release its buffer.
+    fn push(&mut self, frame: &Frame, force_idr: bool) -> anyhow::Result<Converted>;
+
+    /// Encode the last picture again (`times.repeat`): a requested keyframe
+    /// while the screen is idle, or the keep-alive. False if there is no
+    /// picture yet or the sink can't (hybrid).
+    fn repeat(&mut self, force_idr: bool) -> anyhow::Result<bool>;
 }
 
 /// Picks the newest usable item from a queue, handing the others back

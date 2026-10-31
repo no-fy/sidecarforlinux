@@ -391,8 +391,11 @@ impl Display {
         Ok(Buffer { dpy: self.dpy, id })
     }
 
-    /// Render `buffers` into `target` with `ctx` and wait for the result.
-    pub fn run(&self, ctx: &Context, target: &Surface, buffers: &[Buffer]) -> Result<()> {
+    /// Queue `buffers` for `target` on `ctx` without waiting: the GPU runs
+    /// it after earlier work on the same surfaces (the driver and the
+    /// kernel order it), so colour conversion and encode can be submitted
+    /// back to back.
+    pub fn submit(&self, ctx: &Context, target: &Surface, buffers: &[Buffer]) -> Result<()> {
         let mut ids: Vec<sys::VABufferID> = buffers.iter().map(|b| b.id).collect();
         // SAFETY: valid context, surface and buffer ids.
         unsafe {
@@ -404,36 +407,13 @@ impl Display {
             let end = sys::vaEndPicture(self.dpy, ctx.id);
             check("vaRenderPicture", st)?;
             check("vaEndPicture", end)?;
-            check("vaSyncSurface", sys::vaSyncSurface(self.dpy, target.id))?;
         }
         Ok(())
     }
 
-    /// The encoded bytes of a coded buffer (all segments).
-    pub fn read_coded(&self, b: &Buffer) -> Result<Vec<u8>> {
-        let mut p: *mut c_void = std::ptr::null_mut();
-        // SAFETY: mapping a coded buffer yields a list of segments, valid
-        // until unmapped.
-        unsafe {
-            check(
-                "vaMapBuffer (coded)",
-                sys::vaMapBuffer(self.dpy, b.id, &mut p),
-            )?;
-            let mut out = Vec::new();
-            let mut seg = p as *const sys::VACodedBufferSegment;
-            while !seg.is_null() {
-                let s = &*seg;
-                if s.size > 0 && !s.buf.is_null() {
-                    out.extend_from_slice(std::slice::from_raw_parts(
-                        s.buf as *const u8,
-                        s.size as usize,
-                    ));
-                }
-                seg = s.next as *const sys::VACodedBufferSegment;
-            }
-            sys::vaUnmapBuffer(self.dpy, b.id);
-            Ok(out)
-        }
+    /// A handle for the encoder's completion thread.
+    pub fn handle(&self) -> Dpy {
+        Dpy(self.dpy)
     }
 
     /// Copy CPU pixels (one plane, `stride` bytes per row) into a surface
@@ -528,6 +508,59 @@ impl Drop for Display {
     fn drop(&mut self) {
         // SAFETY: every object made from it is gone (dropped first).
         unsafe { sys::vaTerminate(self.dpy) };
+    }
+}
+
+/// The raw display, for the calls the encoder's completion thread makes
+/// (wait for a surface, read a coded buffer). The `Display` must outlive
+/// every use; the encoder joins that thread before dropping it.
+///
+/// Calling into libva from two threads on one display is how Intel's own
+/// oneVPL runtime uses iHD, and Mesa locks per driver context
+/// (**assumption** for our use).
+#[derive(Clone, Copy)]
+pub struct Dpy(sys::VADisplay);
+
+// SAFETY: see above; only the calls below are made through it.
+unsafe impl Send for Dpy {}
+
+impl Dpy {
+    /// Wait until the GPU no longer uses `surface`. iHD waits for every
+    /// pending access to the surface's buffer object (`mos_bo_wait`), reads
+    /// included, so on an imported DMA-BUF this returns once the colour
+    /// conversion has read it (media-driver `SyncSurface`).
+    pub fn sync_surface(&self, surface: sys::VASurfaceID) -> Result<()> {
+        // SAFETY: valid display and surface id.
+        check("vaSyncSurface", unsafe {
+            sys::vaSyncSurface(self.0, surface)
+        })
+    }
+
+    /// The encoded bytes of a coded buffer (all segments).
+    pub fn read_coded(&self, buffer: sys::VABufferID) -> Result<Vec<u8>> {
+        let mut p: *mut c_void = std::ptr::null_mut();
+        // SAFETY: mapping a coded buffer yields a list of segments, valid
+        // until unmapped.
+        unsafe {
+            check(
+                "vaMapBuffer (coded)",
+                sys::vaMapBuffer(self.0, buffer, &mut p),
+            )?;
+            let mut out = Vec::new();
+            let mut seg = p as *const sys::VACodedBufferSegment;
+            while !seg.is_null() {
+                let s = &*seg;
+                if s.size > 0 && !s.buf.is_null() {
+                    out.extend_from_slice(std::slice::from_raw_parts(
+                        s.buf as *const u8,
+                        s.size as usize,
+                    ));
+                }
+                seg = s.next as *const sys::VACodedBufferSegment;
+            }
+            sys::vaUnmapBuffer(self.0, buffer);
+            Ok(out)
+        }
     }
 }
 
