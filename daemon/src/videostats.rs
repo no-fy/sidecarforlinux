@@ -2,9 +2,10 @@
 //! iPad's `VideoFeedback`: received → decoded → on screen.
 //!
 //! `decoded_ns` and `displayed_ns` are 0 when the iPad can't know them. The
-//! AVSampleBufferDisplayLayer renderer decodes and displays inside the
-//! system and reports neither; the Metal renderer reports both (decode
-//! finished, and the moment the frame actually reached the screen).
+//! Metal renderer reports both (decode finished, and the moment the frame
+//! actually reached the screen). The AVSampleBufferDisplayLayer renderer
+//! decodes inside the system, so only `displayed_ns`: the refresh at which
+//! the layer first showed the frame (app ≥ round 3, ±1 refresh).
 //!
 //! decode and "decoded → on screen" are differences of two iPad
 //! timestamps, so they don't depend on clock sync. Only "encoder out → on
@@ -20,7 +21,10 @@ pub struct IpadVideoLatency {
     /// Feedback received in this window. While the screen keeps changing,
     /// frames / seconds is the frame rate the PC actually sends.
     frames: u64,
-    /// Decoded but never shown: a newer frame took its place first.
+    /// Frames with a display time (the sample size of "received -> on screen").
+    shown: u64,
+    /// Queued but never seen on screen: a newer frame took its place first
+    /// (or, with AVSampleBufferDisplayLayer, it looked like the one before).
     replaced: u64,
     /// Not decoded (decode error, or waiting for a keyframe).
     not_decoded: u64,
@@ -41,6 +45,7 @@ impl IpadVideoLatency {
         IpadVideoLatency {
             since: std::time::Instant::now(),
             frames: 0,
+            shown: 0,
             replaced: 0,
             not_decoded: 0,
             decode: LatencyStats::new(4096),
@@ -57,14 +62,14 @@ impl IpadVideoLatency {
         let (rx, dec, shown) = (fb.received_ns as i64, fb.decoded_ns, fb.displayed_ns);
         if fb.request_keyframe && dec == 0 {
             self.not_decoded += 1;
+        } else if shown == 0 {
+            self.replaced += 1;
         }
         if dec != 0 {
             self.decode.push_ns(dec as i64 - rx);
-            if shown == 0 {
-                self.replaced += 1;
-            }
         }
         if shown != 0 {
+            self.shown += 1;
             if dec != 0 {
                 self.to_screen.push_ns(shown as i64 - dec as i64);
             }
@@ -117,11 +122,12 @@ impl IpadVideoLatency {
         };
         Some(format!(
             "video on the iPad (p50/p95 ms, {window}): decode {} | decoded -> on screen {} | \
-             received -> on screen {} | encoder out -> on screen {} | {} replaced by a newer frame, {} not decoded",
+             received -> on screen {} | encoder out -> on screen {} | {} shown, {} replaced by a newer frame, {} not decoded",
             pair(&self.decode),
             pair(&self.to_screen),
             pair(&self.received_to_screen),
             pair(&self.encoder_to_screen),
+            self.shown,
             self.replaced,
             self.not_decoded,
         ))
@@ -168,7 +174,7 @@ mod tests {
         assert!(s.contains("received -> on screen 14.0/14.0"), "{s}");
         assert!(s.contains("encoder out -> on screen 15.0/15.0"), "{s}");
         assert!(
-            s.contains("1 replaced by a newer frame, 1 not decoded"),
+            s.contains("10 shown, 1 replaced by a newer frame, 1 not decoded"),
             "{s}"
         );
         l.clear();
@@ -182,6 +188,23 @@ mod tests {
         let s = l.summary().unwrap();
         assert!(s.contains("not reported (1 frames in "), "{s}");
         assert!(s.contains("AVSampleBufferDisplayLayer"), "{s}");
+    }
+
+    #[test]
+    fn avsamplebufferdisplaylayer_reports_display_time_only() {
+        let mut l = IpadVideoLatency::new();
+        // Two frames shown 30 ms after arrival, one never seen on screen.
+        l.push(&fb(1, 10 * MS, 0, 40 * MS, false), Some(9 * MS), Some(0));
+        l.push(&fb(2, 20 * MS, 0, 0, false), Some(19 * MS), Some(0));
+        l.push(&fb(3, 30 * MS, 0, 60 * MS, false), Some(29 * MS), Some(0));
+        let s = l.summary().unwrap();
+        assert!(s.contains("decode n/a | decoded -> on screen n/a"), "{s}");
+        assert!(s.contains("received -> on screen 30.0/30.0"), "{s}");
+        assert!(s.contains("encoder out -> on screen 31.0/31.0"), "{s}");
+        assert!(
+            s.contains("2 shown, 1 replaced by a newer frame, 0 not decoded"),
+            "{s}"
+        );
     }
 
     #[test]
