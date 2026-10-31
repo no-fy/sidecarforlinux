@@ -96,6 +96,15 @@ fn pw_state() -> String {
     )
 }
 
+/// One PipeWire test at a time: several synthetic sources and slow
+/// consumers at once on a small CI runner made timings (and once a whole
+/// stream) unreliable.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn enabled() -> bool {
     if std::env::var_os("SIDECAR_PIPEWIRE_TEST").is_none() {
         eprintln!("SIDECAR_PIPEWIRE_TEST not set: skipping (needs a running PipeWire)");
@@ -162,6 +171,7 @@ fn falls_back_to_shm_and_a_slow_sink_gets_fresh_pictures() {
     if !enabled() {
         return;
     }
+    let _serial = serial();
     // gst's pipewiresink quits when its consumer leaves: one source each.
     let name = format!("sidecar-test-{}-a", std::process::id());
     let src = source(&name, "30/1");
@@ -282,6 +292,7 @@ fn keyframe_requests_reach_the_encoder_idle_or_busy() {
     if !enabled() {
         return;
     }
+    let _serial = serial();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -353,6 +364,7 @@ fn keep_alive_resends_the_last_picture_after_a_second_of_silence() {
     if !enabled() {
         return;
     }
+    let _serial = serial();
     let name = format!("sidecar-ka-{}", std::process::id());
     let _src = source(&name, "1/5"); // one frame every 5 s
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -381,12 +393,19 @@ fn keep_alive_resends_the_last_picture_after_a_second_of_silence() {
             .await
             .unwrap_or_else(|| panic!("no frame\n{}", pw_state()));
         assert!(!first.times.repeat);
-        let t0 = Instant::now();
-        let again = next(&mut rx, Duration::from_secs(3))
-            .await
-            .expect("a keep-alive within 3 s");
-        let after = t0.elapsed();
-        assert!(again.times.repeat, "expected a re-sent picture");
+        // The source may still deliver a frame or two (gst's preroll can
+        // arrive on its own on a slow machine): the keep-alive must come
+        // about a second after the *last* frame.
+        let mut last = Instant::now();
+        let (again, after) = loop {
+            let e = next(&mut rx, Duration::from_secs(3))
+                .await
+                .expect("a keep-alive within 3 s of the last frame");
+            if e.times.repeat {
+                break (e, last.elapsed());
+            }
+            last = Instant::now();
+        };
         assert_eq!(again.annexb, vec![0], "a keep-alive is not an IDR");
         assert!(
             (Duration::from_millis(900)..Duration::from_millis(1300)).contains(&after),
