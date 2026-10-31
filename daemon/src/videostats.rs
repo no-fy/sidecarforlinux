@@ -16,6 +16,9 @@ use sidecar_protocol::VideoFeedback;
 /// One reporting window. The video channel logs `summary()` every 10 s and
 /// then clears it, so switching the iPad's renderer shows in the next line.
 pub struct IpadVideoLatency {
+    since: std::time::Instant,
+    /// Feedback received in this window. While the screen keeps changing,
+    /// frames / seconds is the frame rate the PC actually sends.
     frames: u64,
     /// Decoded but never shown: a newer frame took its place first.
     replaced: u64,
@@ -36,6 +39,7 @@ impl Default for IpadVideoLatency {
 impl IpadVideoLatency {
     pub fn new() -> Self {
         IpadVideoLatency {
+            since: std::time::Instant::now(),
             frames: 0,
             replaced: 0,
             not_decoded: 0,
@@ -81,12 +85,16 @@ impl IpadVideoLatency {
         if self.frames == 0 {
             return None;
         }
+        let window = format!(
+            "{} frames in {:.1} s",
+            self.frames,
+            self.since.elapsed().as_secs_f64()
+        );
         if self.decode.is_empty() && self.received_to_screen.is_empty() {
             return Some(format!(
-                "video on the iPad: decode and display times not reported ({} frames). \
+                "video on the iPad: decode and display times not reported ({window}). \
                  The iPad's renderer is AVSampleBufferDisplayLayer, which doesn't expose them; \
-                 choose Metal in the app's gear menu to measure",
-                self.frames
+                 choose Metal in the app's gear menu to measure"
             ));
         }
         let pair = |s: &LatencyStats| {
@@ -102,9 +110,8 @@ impl IpadVideoLatency {
             }
         };
         Some(format!(
-            "video on the iPad (p50/p95 ms, {} frames): decode {} | decoded -> on screen {} | \
+            "video on the iPad (p50/p95 ms, {window}): decode {} | decoded -> on screen {} | \
              received -> on screen {} | encoder out -> on screen {} | {} replaced by a newer frame, {} not decoded",
-            self.frames,
             pair(&self.decode),
             pair(&self.to_screen),
             pair(&self.received_to_screen),
@@ -149,7 +156,7 @@ mod tests {
         l.push(&fb(98, 5000 * MS, 5003 * MS, 0, false), None, Some(off));
         l.push(&fb(99, 5010 * MS, 0, 0, true), None, Some(off));
         let s = l.summary().unwrap();
-        assert!(s.contains("12 frames"), "{s}");
+        assert!(s.contains("12 frames in "), "{s}");
         assert!(s.contains("decode 4.0/4.0"), "{s}");
         assert!(s.contains("decoded -> on screen 10.0/10.0"), "{s}");
         assert!(s.contains("received -> on screen 14.0/14.0"), "{s}");
@@ -167,7 +174,7 @@ mod tests {
         let mut l = IpadVideoLatency::new();
         l.push(&fb(1, 10 * MS, 0, 0, false), Some(MS), Some(0));
         let s = l.summary().unwrap();
-        assert!(s.contains("not reported (1 frames)"), "{s}");
+        assert!(s.contains("not reported (1 frames in "), "{s}");
         assert!(s.contains("AVSampleBufferDisplayLayer"), "{s}");
     }
 
