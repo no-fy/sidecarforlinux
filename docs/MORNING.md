@@ -397,6 +397,19 @@ What to look for:
 
 The stage table is in [latency.md → Where the PC's time goes](latency.md#where-the-pcs-time-goes-native-backend).
 
+## 16. Second-screen lag, round 3: timing AVSampleBufferDisplayLayer (5 min) → **paste back**
+
+The AVSampleBufferDisplayLayer renderer now reports when each frame reached the screen (±1 refresh), so it can be compared with Metal's display link (≈ 36–39 ms in round 2).
+
+1. **Install the latest nightly iPad app** (it's on `main` now; wait for the green **ios** run after the merge): `scripts/resign-ipad.sh` with the iPad plugged in. If you did §15 with today's `main`, the daemon already has the "N shown" count.
+
+2. `systemctl --user stop sidecard 2>/dev/null; sidecard run --video virtual 2>&1 | tee ~/sidecar-r3.log`
+3. ⚙︎ → Video renderer → **AVSampleBufferDisplayLayer**. Wait 3 s; the picture returns at the next keyframe, and so does the frame matching. Draw continuously in Krita for 30 s, with a few short pauses. Note (or screenshot) the readout line under the latency line.
+4. ⚙︎ → Video renderer → **Metal · display link**. Draw the same way for 30 s, for a same-session comparison.
+5. **Send back:** both readout lines, and `grep -E 'video on the iPad' ~/sidecar-r3.log` (say roughly when you switched).
+
+If the readout says `not measurable`, `displayedPixelBuffer()` gave nothing on your iPad; send it anyway.
+
 ---
 
 ### If something is stuck

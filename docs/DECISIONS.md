@@ -299,3 +299,27 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - Default stays `gstreamer` until native is faster on your machine.
 - **HuC (optional, untested):** Intel's media-driver README says "HuC firmware is necessary for AVC/HEVC/VP9/AV1 low power encoding bitrate control, including CBR, VBR", and that on CFL (Coffee Lake, your UHD 630) HuC loading has been off by default since kernel 4.15: set `i915.enable_guc=2`. That is a kernel parameter (`options i915 enable_guc=2` in `/etc/modprobe.d/`, root) plus a reboot. Not needed: EncSlice has CBR, and LP now runs with constant QP.
 - **Details and sources:** [`research/native-video.md`](research/native-video.md).
+
+## D23. Timing the AVSampleBufferDisplayLayer renderer
+
+- **Why:** to compare it with the Metal modes (your round-2 numbers: display link ≈ 36–39 ms decoded → on screen, best of the three). The layer decodes and displays inside iPadOS and reports neither time per frame.
+- **When a frame appears:** `AVSampleBufferVideoRenderer.displayedPixelBuffer()` (iOS 17.4+; Objective-C `copyDisplayedPixelBuffer`) returns a copy of the picture the layer shows now. A `CADisplayLink` on its own thread asks once per refresh, only while this renderer is visible. The refresh where a new picture first shows up is the frame's `displayed_ns`.
+  - **Precision:** ±1 refresh (16.7 ms).
+  - **Assumption:** "displayed", as the layer reports it, means on the glass at that refresh.
+- **Which frame it is:** the copy loses custom attachments (reported by another developer, [BD_to_AVP#1103](https://github.com/cbusillo/BD_to_AVP/issues/1103)), so attachments can't say. Instead the app also decodes every frame with VideoToolbox; that output is only fingerprinted, never shown. H.264 decoding is bit-exact by specification, so the luma of the layer's copy equals that of exactly one decoded frame (the oldest one, if consecutive frames look identical).
+  - **Assumption:** the copy keeps 8-bit 4:2:0 luma unchanged.
+  - **Fallback:** if no decode matches (copy converted or scaled), the first frame after a ≥ 150 ms pause owns the next screen change.
+- **Reported as:** `VideoFeedback.displayed_ns` for frames seen on screen, 0 for frames never seen. `decoded_ns` stays 0, because decoding happens inside the layer and is unknowable. The daemon's `video on the iPad` line then fills in "received -> on screen" and "encoder out -> on screen" for this renderer, and gains "N shown" (its sample size).
+- **The layer's own metrics:** `loadVideoPerformanceMetrics` (iOS 17.4+) goes into the on-iPad readout once a second:
+  - frames and dropped frames;
+  - **the share displayed "using optimized compositing"**, which Apple describes as "full screen frames rendered in a special power-efficient mode that didn't require compositing with other UI elements". That's the one way this renderer could beat Metal;
+  - the average frame delay. The layer's own figure is relative to sample timestamps, which DisplayImmediately ignores, so treat it as informative only.
+- **Not measurable:** if `displayedPixelBuffer()` returns nil (Apple: protected content, nothing shown, "image unavailable", or a non-zero rate), the readout says so, the daemon line stays "not reported", and frames flow as before.
+- **Cost:** a second hardware decode of every frame plus a luma hash per frame and per refresh, only while this renderer is on screen.
+  - **Assumption:** this doesn't measurably slow the layer on an M4.
+- **Looked at, not used:** iOS 27's `AVSampleBufferVideoRenderer.Receiver` reports only decode failures and flush requests, not display times. CI builds with the iOS 26.5 SDK anyway.
+- **Sources** (read 2026-10-31):
+  - [displayedPixelBuffer()](https://developer.apple.com/documentation/avfoundation/avsamplebuffervideorenderer/displayedpixelbuffer()); its header comment (as mirrored in [objc2-av-foundation](https://docs.rs/crate/objc2-av-foundation/latest/source/src/generated/AVSampleBufferVideoRenderer.rs)) lists the nil cases
+  - [loadVideoPerformanceMetrics](https://developer.apple.com/documentation/avfoundation/avsamplebuffervideorenderer/loadvideoperformancemetrics(completionhandler:)), [AVVideoPerformanceMetrics](https://developer.apple.com/documentation/avfoundation/avvideoperformancemetrics)
+  - [Receiver](https://developer.apple.com/documentation/avfoundation/avsamplebuffervideorenderer/receiver)
+
