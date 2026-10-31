@@ -257,3 +257,24 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - forum thread [711033](https://developer.apple.com/forums/thread/711033) (not Apple staff)
   - All read 2026-10-31. I found no newer iPadOS 26/27 presentation API in Apple's API reference or in web searches. I didn't watch the WWDC25/26 Metal sessions; WWDC25 "Go further with Metal 4 games" has a present-pacing sample worth a look if these modes aren't enough.
 
+## D22. Native capture and encode: pipewire-rs + raw libva
+
+- **Context:** the GStreamer subprocess (D18) works on your machine, but pen input → encoded frame is ~33 ms and nothing tells us where it goes, and it can't make a keyframe on request.
+- **Options**
+  1. Keep the subprocess and tune it.
+  2. `gstreamer-rs` in-process (appsrc/appsink).
+  3. FFmpeg through `ffmpeg-next` (`h264_vaapi`).
+  4. `cros-libva` / `cros-codecs` (ChromeOS, BSD-3).
+  5. PipeWire through `pipewire-rs`, VA-API through our own narrow bindgen bindings.
+- **Choice:** 5, selectable with `[video] backend = "native"`. `"gstreamer"` stays the default until the native path is proven on your machine. `"hybrid"` (native capture → raw frames → the old gst encoder) exists to test the capture half on its own.
+- **Why**
+  - It's zero copy: KWin's DMA-BUF is imported as a VA surface, converted BGRx → NV12 by VA video processing, and encoded. The PipeWire buffer goes back to KWin as soon as the conversion has read it.
+  - Per-stage timing: KWin's capture tick (`spa_meta_header.pts`, CLOCK_MONOTONIC) → dequeued → converted → encoded → sent.
+  - IDR on request, including re-encoding the last picture when the screen is idle.
+  - Licences: libpipewire, libva and pipewire-rs are MIT. Arch's FFmpeg is built `--enable-gpl --enable-version3`, so option 3 would make the daemon GPLv3 when distributed. cros-libva's allowlist lacks the VPP and packed-header types (we'd write raw FFI anyway), and cros-codecs is a whole framework.
+  - Capture and encode meet at a source-agnostic interface (DRM fourcc + modifier + plane fds, or SHM bytes; `native/frame.rs`). A non-PipeWire source, such as Wayfire's `wlr_export_dmabuf`, can feed the same encoder later.
+- **Cost**
+  - The default Linux build now needs **libclang** (bindgen) and the **libpipewire/libspa and libva headers**. On Arch that means the `clang`, `pipewire` and `libva` packages. `cargo build --no-default-features --features display` still builds without them, and macOS ignores the feature.
+  - VA-API and KWin DMA-BUF can't run in the VM or on CI runners (no GPU), so the encoder is **built but untested** until you run it.
+- **Undo:** set `backend = "gstreamer"` (the default). The native code is behind the `native-video` cargo feature.
+- **Details and sources:** [`research/native-video.md`](research/native-video.md).
