@@ -323,7 +323,9 @@ impl State {
     /// Encode and hand over. Blocks if the network side is slow: encoded
     /// P-frames must not be dropped (the iPad's picture would break).
     fn encode_and_send(&mut self, force_idr: bool) -> Result<()> {
-        let force = force_idr || std::mem::take(&mut self.keyframe);
+        // Always clear the request (a `||` would skip the take when forced).
+        let requested = std::mem::take(&mut self.keyframe);
+        let force = force_idr || requested;
         if let Some(enc) = self.sink.encode(force)? {
             self.out
                 .blocking_send(Event::Frame(enc))
