@@ -450,7 +450,9 @@ If the readout says `not measurable`, send it anyway: it says whether the layer 
    > **Result (your run):** at 240 the stream needed H.264 level 6.0 and Intel's encoder failed every first frame, so the screen blinked in and out. Fixed: the capture now stops at 136 frames/s (the most level 5.2 allows at this size) while the screen itself can run at 240. Try again after `git pull && scripts/install-daemon.sh`: the log should say `native capture: at most 136 frames/s` and `PipeWire format: … max 136/1 fps`.
 
 
-## 18. Fingers on the second screen: pinch, pan, rotate (10 min) → **tell me how it feels**
+## 18. Fingers on the second screen: pinch, pan, rotate (10 min) → **done 2026-10-31**
+
+> **Result (your test):** the first build put the fingers on the laptop's screen (the touchscreen wasn't pinned to Virtual-ipad); fixed in the daemon, now "works well".
 
 Your fingers now reach the PC as a touchscreen on the iPad's screen (D25), while the iPad shows it. Palm rejection: fingers are ignored while the pencil hovers or touches, and big contacts (a palm) are ignored.
 

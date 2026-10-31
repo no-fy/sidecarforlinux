@@ -359,5 +359,5 @@ Research notes with sources for everything below are in [`docs/research/`](resea
 - **When:** only while the iPad shows the PC's screen (video on); as a plain tablet, fingers stay off. ⚙︎ → "Send finger touches to the PC" switches them off; `[touch] enabled = false` turns the device off on the PC. Both sides advertise the `touch` capability, so old daemons and old apps simply don't use it.
 - **Clean screen:** a finger tap no longer shows the ⚙︎ (it goes to the PC); a finger in the top-right corner, where the ⚙︎ sits, does.
 - **Lifetime:** like the pen (D19), the touchscreen exists only while the iPad is connected.
-- **Pinning (fix, your first test):** the touchscreen first went to the laptop's screen. sidecard pinned only devices KWin reports as `tabletTool`, and KWin reports the touchscreen as `touch`. Both are pinned now (`outputName` over D-Bus). **Built but untested** with KWin.
+- **Pinning (fix, your first test):** the touchscreen first went to the laptop's screen. sidecard pinned only devices KWin reports as `tabletTool`, and KWin reports the touchscreen as `touch`. Both are pinned now (`outputName` over D-Bus). **Tested on your machine** (KWin 6.8): "works well now".
 - **Undo:** `[touch] enabled = false`, or the iPad toggle.

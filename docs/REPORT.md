@@ -113,8 +113,9 @@ A hand review also caught and fixed a bug that tests couldn't have shown without
 | Protocol TouchBatch (0x13) + `touch` capability, Rust and Swift, shared golden vector | **Tested** (Rust tests here; Swift in macOS CI) |
 | Daemon touch mapper: MT protocol B frames, fingers grouped per UIKit event, palm rejection (pencil near, radius), cancel as `MT_TOOL_PALM` | **Tested** (9 unit tests) |
 | "Sidecar iPad Touch" uinput touchscreen: udev touchscreen, libinput touch capability, down/motion/up, palm → touch cancel | **Tested in CI** with the real kernel and libinput (`sidecard touch-demo`) |
-| iPad: finger capture (coalesced, time-ordered), sent only while video is on and to daemons that want touches; ⚙︎ toggle; clean screen's corner | **Built but untested** on the iPad |
-| Gestures in apps (Krita pan/zoom/rotate, browser pinch-zoom) over KWin | **Assumption** until your test (MORNING §18); 45 pt palm radius: **assumption** to tune |
+| iPad: finger capture (coalesced, time-ordered), sent only while video is on and to daemons that want touches; ⚙︎ toggle; clean screen's corner | **Tested on your iPad** ("works well now", after the pinning fix) |
+| Touchscreen pinned to Virtual-ipad through KWin (`outputName` on `touch` devices) | **Tested on your machine**; the first build left it on the laptop's screen |
+| Palm rejection in daily use; 45 pt palm radius | **Assumption** to tune: tell me if a palm gets through or a finger is ignored |
 
 ## Defaults after round 3 (2026-10-31)
 
