@@ -42,11 +42,11 @@ fn source(name: &str, rate: &str) -> Source {
 }
 
 /// Offers DMA-BUF modifiers the test producer can't satisfy, takes SHM,
-/// optionally slowly.
+/// optionally slowly, and hands each frame straight to the output.
 struct TestSink {
     delay: Duration,
     shm_frames: Arc<AtomicU64>,
-    last: Option<Encoded>,
+    out: mpsc::Sender<Event>,
 }
 
 impl FrameSink for TestSink {
@@ -57,7 +57,7 @@ impl FrameSink for TestSink {
         )]
     }
 
-    fn convert(&mut self, f: &Frame) -> anyhow::Result<Converted> {
+    fn push(&mut self, f: &Frame, _: bool) -> anyhow::Result<Converted> {
         std::thread::sleep(self.delay);
         let Pixels::Shm { data, stride, .. } = f.pixels else {
             anyhow::bail!("expected shared memory from a CPU test source");
@@ -66,17 +66,17 @@ impl FrameSink for TestSink {
         self.shm_frames.fetch_add(1, Ordering::Relaxed);
         let mut times = f.times;
         times.converted_ns = sidecard::clock::now_ns();
-        self.last = Some(Encoded {
+        let _ = self.out.blocking_send(Event::Frame(Encoded {
             annexb: Vec::new(),
             width: f.width,
             height: f.height,
             times,
-        });
+        }));
         Ok(Converted::Done)
     }
 
-    fn encode(&mut self, _: bool) -> anyhow::Result<Option<Encoded>> {
-        Ok(self.last.take())
+    fn repeat(&mut self, _: bool) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 
@@ -122,11 +122,11 @@ fn capture(name: &str, delay: Duration, frames: usize) -> (String, u32, Vec<Enco
                 height: 240,
                 max_fps: 60,
             },
-            move || {
+            move |out| {
                 Ok(Box::new(TestSink {
                     delay,
                     shm_frames: shm2,
-                    last: None,
+                    out,
                 }) as Box<dyn FrameSink>)
             },
             tx,
@@ -217,10 +217,21 @@ fn falls_back_to_shm_and_a_slow_sink_gets_fresh_pictures() {
 }
 
 /// Records whether each encode was a forced IDR (annexb = [1]) or not ([0]),
-/// and re-encodes its last picture when forced while idle, like VaEncoder.
+/// and re-encodes its last picture on `repeat`, like VaEncoder.
 struct KeyframeSink {
-    pending: Option<sidecard::native::stats::StageTimes>,
     have_picture: bool,
+    out: mpsc::Sender<Event>,
+}
+
+impl KeyframeSink {
+    fn emit(&self, force: bool, times: sidecard::native::stats::StageTimes) {
+        let _ = self.out.blocking_send(Event::Frame(Encoded {
+            annexb: vec![force as u8],
+            width: 320,
+            height: 240,
+            times,
+        }));
+    }
 }
 
 impl FrameSink for KeyframeSink {
@@ -228,30 +239,27 @@ impl FrameSink for KeyframeSink {
         Vec::new()
     }
 
-    fn convert(&mut self, f: &Frame) -> anyhow::Result<Converted> {
+    fn push(&mut self, f: &Frame, force: bool) -> anyhow::Result<Converted> {
         let mut t = f.times;
         t.converted_ns = sidecard::clock::now_ns();
-        self.pending = Some(t);
         self.have_picture = true;
+        self.emit(force, t);
         Ok(Converted::Done)
     }
 
-    fn encode(&mut self, force: bool) -> anyhow::Result<Option<Encoded>> {
-        let times = match self.pending.take() {
-            Some(t) => t,
-            None if self.have_picture => sidecard::native::stats::StageTimes {
+    fn repeat(&mut self, force: bool) -> anyhow::Result<bool> {
+        if !self.have_picture {
+            return Ok(false);
+        }
+        self.emit(
+            force,
+            sidecard::native::stats::StageTimes {
                 arrived_ns: sidecard::clock::now_ns(),
                 repeat: true,
                 ..Default::default()
             },
-            None => return Ok(None),
-        };
-        Ok(Some(Encoded {
-            annexb: vec![force as u8],
-            width: 320,
-            height: 240,
-            times,
-        }))
+        );
+        Ok(true)
     }
 }
 
@@ -290,10 +298,10 @@ fn keyframe_requests_reach_the_encoder_idle_or_busy() {
                     height: 240,
                     max_fps: 60,
                 },
-                || {
+                |out| {
                     Ok(Box::new(KeyframeSink {
-                        pending: None,
                         have_picture: false,
+                        out,
                     }) as Box<dyn FrameSink>)
                 },
                 tx,
@@ -360,10 +368,10 @@ fn keep_alive_resends_the_last_picture_after_a_second_of_silence() {
                 height: 240,
                 max_fps: 60,
             },
-            || {
+            |out| {
                 Ok(Box::new(KeyframeSink {
-                    pending: None,
                     have_picture: false,
+                    out,
                 }) as Box<dyn FrameSink>)
             },
             tx,

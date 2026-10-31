@@ -200,7 +200,7 @@ impl FrameSink for GstPipeSink {
         Vec::new() // shared memory only: the frame goes through the CPU anyway
     }
 
-    fn convert(&mut self, frame: &Frame) -> Result<Converted> {
+    fn push(&mut self, frame: &Frame, _force_idr: bool) -> Result<Converted> {
         let Pixels::Shm {
             fourcc,
             data,
@@ -244,9 +244,9 @@ impl FrameSink for GstPipeSink {
         Ok(Converted::Done)
     }
 
-    fn encode(&mut self, _force_idr: bool) -> Result<Option<Encoded>> {
-        // gst encodes on its own threads; frames arrive through the reader.
-        // It can't make a keyframe on request (key-int-max = 2 s instead).
-        Ok(None)
+    fn repeat(&mut self, _force_idr: bool) -> Result<bool> {
+        // gst encodes on its own; it can't re-send or force a keyframe
+        // (key-int-max = 2 s instead).
+        Ok(false)
     }
 }

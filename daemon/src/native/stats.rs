@@ -16,7 +16,12 @@ pub struct StageTimes {
     pub tick_ns: Option<u64>,
     /// The daemon dequeued the buffer.
     pub arrived_ns: u64,
-    /// Colour conversion finished; the compositor's buffer was handed back.
+    /// The picture was usable on the GPU: the compositor's own GPU render
+    /// into the DMA-BUF had finished, or our CPU upload (shared memory) was
+    /// done. 0 = not measured (hybrid).
+    pub ready_ns: u64,
+    /// Colour conversion finished on the GPU; the compositor's buffer was
+    /// handed back.
     pub converted_ns: u64,
     /// The encoded frame was in our hands.
     pub encoded_ns: u64,
@@ -83,6 +88,7 @@ impl FpsMeter {
 /// Rolling per-stage statistics.
 pub struct StageStats {
     tick_to_arrive: LatencyStats,
+    ready: LatencyStats,
     convert: LatencyStats,
     encode: LatencyStats,
     send: LatencyStats,
@@ -98,6 +104,7 @@ impl StageStats {
     pub fn new(labels: (&'static str, &'static str)) -> Self {
         StageStats {
             tick_to_arrive: LatencyStats::new(2000),
+            ready: LatencyStats::new(2000),
             convert: LatencyStats::new(2000),
             encode: LatencyStats::new(2000),
             send: LatencyStats::new(2000),
@@ -117,7 +124,13 @@ impl StageStats {
         if let Some(tick) = t.tick_ns {
             self.tick_to_arrive.push_ns(d(tick, t.arrived_ns));
         }
-        self.convert.push_ns(d(t.arrived_ns, t.converted_ns));
+        let convert_from = if t.ready_ns != 0 {
+            self.ready.push_ns(d(t.arrived_ns, t.ready_ns));
+            t.ready_ns
+        } else {
+            t.arrived_ns
+        };
+        self.convert.push_ns(d(convert_from, t.converted_ns));
         self.encode.push_ns(d(t.converted_ns, t.encoded_ns));
         self.send.push_ns(d(t.encoded_ns, sent_ns));
         self.total.push_ns(d(t.start_ns(), sent_ns));
@@ -146,8 +159,13 @@ impl StageStats {
             format!("capture tick -> daemon {}", ms(&self.tick_to_arrive))
         };
         let (peak, _) = self.fps.take();
+        let ready = if self.ready.is_empty() {
+            String::new()
+        } else {
+            format!(", ready {}", ms(&self.ready))
+        };
         let line = format!(
-            "video stages p50/p95 ms over {n} frames: {tick}, {} {}, {} {}, send {}; {} -> sent {}; {} stale buffers skipped; peak {peak} frames/s",
+            "video stages p50/p95 ms over {n} frames: {tick}{ready}, {} {}, {} {}, send {}; {} -> sent {}; {} stale buffers skipped; peak {peak} frames/s",
             self.labels.0,
             ms(&self.convert),
             self.labels.1,
@@ -159,6 +177,7 @@ impl StageStats {
         );
         for l in [
             &mut self.tick_to_arrive,
+            &mut self.ready,
             &mut self.convert,
             &mut self.encode,
             &mut self.send,
@@ -202,7 +221,7 @@ mod tests {
                     converted_ns: base + 3 * MS,
                     encoded_ns: base + 7 * MS,
                     stale_skipped: (i == 3) as u32,
-                    repeat: false,
+                    ..Default::default()
                 },
                 base + 7 * MS + MS / 2,
             );
@@ -210,6 +229,7 @@ mod tests {
         let line = s.report().unwrap();
         assert!(line.contains("over 10 frames"), "{line}");
         assert!(line.contains("capture tick -> daemon 2.0/2.0"), "{line}");
+        assert!(!line.contains("ready"), "no ready stage reported: {line}");
         assert!(line.contains("convert 1.0/1.0"), "{line}");
         assert!(line.contains("encode 4.0/4.0"), "{line}");
         assert!(line.contains("send 0.5/0.5"), "{line}");
@@ -217,6 +237,28 @@ mod tests {
         assert!(line.contains("1 stale buffers skipped"), "{line}");
         assert!(line.contains("peak 10 frames/s"), "{line}");
         assert_eq!(s.report(), None, "window cleared");
+    }
+
+    #[test]
+    fn ready_stage_splits_the_wait_for_the_compositor_from_the_conversion() {
+        let mut s = StageStats::new(("convert", "encode"));
+        s.on_sent(
+            &StageTimes {
+                tick_ns: Some(100 * MS),
+                arrived_ns: 101 * MS,
+                ready_ns: 104 * MS,
+                converted_ns: 105 * MS,
+                encoded_ns: 109 * MS,
+                ..Default::default()
+            },
+            110 * MS,
+        );
+        let line = s.report().unwrap();
+        assert!(
+            line.contains("ready 3.0/3.0, convert 1.0/1.0, encode 4.0/4.0"),
+            "{line}"
+        );
+        assert!(line.contains("tick -> sent 10.0/10.0"), "{line}");
     }
 
     #[test]
@@ -244,8 +286,7 @@ mod tests {
                 arrived_ns: 10 * MS,
                 converted_ns: 11 * MS,
                 encoded_ns: 20 * MS,
-                stale_skipped: 0,
-                repeat: false,
+                ..Default::default()
             },
             21 * MS,
         );
