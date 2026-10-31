@@ -1195,6 +1195,7 @@ dependencies = [
  "libc",
  "mdns-sd",
  "pipewire",
+ "pkg-config",
  "plist",
  "rand",
  "rcgen",

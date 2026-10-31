@@ -87,6 +87,9 @@ pub trait FrameSink {
     /// SHM only). The source offers these to the compositor.
     fn dmabuf_formats(&self) -> Vec<(u32, Vec<u64>)>;
 
+    /// The source renegotiated: its buffers are new, forget cached imports.
+    fn buffers_changed(&mut self) {}
+
     /// Read the frame into the sink's own picture. When it returns, the
     /// source may release the buffer.
     fn convert(&mut self, frame: &Frame) -> anyhow::Result<Converted>;

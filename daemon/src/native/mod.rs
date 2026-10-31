@@ -14,3 +14,7 @@ pub mod encoder;
 pub mod hybrid;
 #[cfg(all(feature = "native-video", target_os = "linux"))]
 pub mod pw;
+#[cfg(all(feature = "native-video", target_os = "linux"))]
+pub mod va;
+#[cfg(all(feature = "native-video", target_os = "linux"))]
+mod va_sys;
