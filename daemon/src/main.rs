@@ -443,6 +443,7 @@ async fn run_video_plan(
     let mut _keeper: Option<StopOnDrop> = None;
     // Fires if KWin closes the virtual monitor's stream (e.g. while its
     // display settings change), so the caller can start over.
+    #[cfg_attr(not(feature = "display"), allow(unused_mut))]
     let mut closed: Option<tokio::sync::oneshot::Receiver<String>> = None;
     let source = match plan.mode.as_str() {
         "test-pattern" => videochan::test_pattern(w, h, plan.fps),

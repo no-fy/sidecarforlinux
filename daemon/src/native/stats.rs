@@ -23,6 +23,9 @@ pub struct StageTimes {
     /// Newer buffers were waiting, so this many older ones were skipped
     /// just before this frame.
     pub stale_skipped: u32,
+    /// A re-encode of the last picture (a requested keyframe while the
+    /// screen is idle, or the 1 s keep-alive), not a new capture.
+    pub repeat: bool,
 }
 
 impl StageTimes {
@@ -107,6 +110,9 @@ impl StageStats {
 
     /// The frame was written to the iPad's socket at `sent_ns`.
     pub fn on_sent(&mut self, t: &StageTimes, sent_ns: u64) {
+        if t.repeat {
+            return; // not a capture: would skew every stage
+        }
         let d = |a: u64, b: u64| b.saturating_sub(a) as i64;
         if let Some(tick) = t.tick_ns {
             self.tick_to_arrive.push_ns(d(tick, t.arrived_ns));
@@ -196,6 +202,7 @@ mod tests {
                     converted_ns: base + 3 * MS,
                     encoded_ns: base + 7 * MS,
                     stale_skipped: (i == 3) as u32,
+                    repeat: false,
                 },
                 base + 7 * MS + MS / 2,
             );
@@ -213,6 +220,22 @@ mod tests {
     }
 
     #[test]
+    fn repeats_are_not_counted() {
+        let mut s = StageStats::new(("convert", "encode"));
+        s.on_sent(
+            &StageTimes {
+                arrived_ns: 10 * MS,
+                converted_ns: 10 * MS,
+                encoded_ns: 12 * MS,
+                repeat: true,
+                ..Default::default()
+            },
+            13 * MS,
+        );
+        assert_eq!(s.report(), None);
+    }
+
+    #[test]
     fn without_ticks_the_total_starts_at_arrival() {
         let mut s = StageStats::new(("copy out", "gst encode"));
         s.on_sent(
@@ -222,6 +245,7 @@ mod tests {
                 converted_ns: 11 * MS,
                 encoded_ns: 20 * MS,
                 stale_skipped: 0,
+                repeat: false,
             },
             21 * MS,
         );

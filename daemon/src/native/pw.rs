@@ -305,6 +305,8 @@ struct State {
     keyframe: bool,
     /// Daemon time of the last frame from the producer.
     last_frame_ns: u64,
+    /// Daemon time of the last frame handed over (incl. repeats).
+    last_sent_ns: u64,
     /// A picture was converted (an idle keyframe can re-encode it).
     have_picture: bool,
     out: mpsc::Sender<Event>,
@@ -330,6 +332,7 @@ impl State {
             self.out
                 .blocking_send(Event::Frame(enc))
                 .map_err(|_| anyhow!("video channel closed"))?;
+            self.last_sent_ns = now_ns();
         }
         Ok(())
     }
@@ -337,6 +340,12 @@ impl State {
 
 /// How long without frames counts as "idle" for a requested keyframe.
 const IDLE_NS: u64 = 40_000_000;
+/// Re-send the last picture after this long without frames, like
+/// `pipewiresrc keepalive-time=1000` in the GStreamer backend: KWin sends
+/// nothing while the screen is still, and an iPad that lost its picture
+/// (renderer switch, decoder reset) only asks for a keyframe when a frame
+/// arrives.
+const KEEPALIVE_NS: u64 = 1_000_000_000;
 
 fn header_meta(buf: &pw::buffer::Buffer) -> Option<(i64, bool)> {
     use spa::buffer::meta::{MetaHeader, MetaHeaderFlags};
@@ -555,6 +564,7 @@ where
         fmt: None,
         keyframe: false,
         last_frame_ns: 0,
+        last_sent_ns: 0,
         have_picture: false,
         out: out.clone(),
         error: None,
@@ -618,18 +628,28 @@ where
         &mut pods,
     )?;
 
-    // Keyframe for an idle screen: KWin sends nothing while nothing
-    // changes, so re-encode the last picture as an IDR.
+    // KWin sends nothing while nothing changes: a requested keyframe
+    // re-encodes the last picture as an IDR, and after a second without
+    // frames the last picture goes out again (keep-alive).
     let idle_keyframe = {
         let st = st.clone();
         let ml = mainloop.clone();
         move || {
             let mut s = st.borrow_mut();
-            if s.keyframe && s.have_picture && now_ns().saturating_sub(s.last_frame_ns) >= IDLE_NS {
-                if let Err(e) = s.encode_and_send(true) {
-                    s.fail(e);
-                    ml.quit();
-                }
+            if !s.have_picture {
+                return;
+            }
+            let now = now_ns();
+            let r = if s.keyframe && now.saturating_sub(s.last_frame_ns) >= IDLE_NS {
+                s.encode_and_send(true)
+            } else if s.last_sent_ns != 0 && now.saturating_sub(s.last_sent_ns) >= KEEPALIVE_NS {
+                s.encode_and_send(false)
+            } else {
+                Ok(())
+            };
+            if let Err(e) = r {
+                s.fail(e);
+                ml.quit();
             }
         }
     };

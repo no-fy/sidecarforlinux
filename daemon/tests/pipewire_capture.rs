@@ -23,11 +23,12 @@ impl Drop for Source {
     }
 }
 
-fn source(name: &str, fps: u32) -> Source {
+/// `rate`: a GStreamer framerate, e.g. "30/1" or "1/5".
+fn source(name: &str, rate: &str) -> Source {
     let child = Command::new("gst-launch-1.0")
         .args(["-q", "videotestsrc", "is-live=true", "pattern=ball", "!"])
         .arg(format!(
-            "video/x-raw,format=BGRx,width=320,height=240,framerate={fps}/1"
+            "video/x-raw,format=BGRx,width=320,height=240,framerate={rate}"
         ))
         .args(["!", "pipewiresink", "mode=provide"])
         .arg(format!(
@@ -163,7 +164,7 @@ fn falls_back_to_shm_and_a_slow_sink_gets_fresh_pictures() {
     }
     // gst's pipewiresink quits when its consumer leaves: one source each.
     let name = format!("sidecar-test-{}-a", std::process::id());
-    let src = source(&name, 30);
+    let src = source(&name, "30/1");
 
     // A sink as fast as the source: every frame.
     let (format, _, fast) = capture(&name, Duration::ZERO, 20);
@@ -181,7 +182,7 @@ fn falls_back_to_shm_and_a_slow_sink_gets_fresh_pictures() {
     // the "skip older queued buffers" branch isn't reached here; see
     // frame::newest_usable's unit test. KWin may queue up to 4.)
     let name = format!("sidecar-test-{}-b", std::process::id());
-    let _src = source(&name, 30);
+    let _src = source(&name, "30/1");
     let (_, stale, slow) = capture(&name, Duration::from_millis(100), 8);
     let age = |f: &Encoded| {
         f.times
@@ -234,8 +235,9 @@ impl FrameSink for KeyframeSink {
     fn encode(&mut self, force: bool) -> anyhow::Result<Option<Encoded>> {
         let times = match self.pending.take() {
             Some(t) => t,
-            None if force && self.have_picture => sidecard::native::stats::StageTimes {
+            None if self.have_picture => sidecard::native::stats::StageTimes {
                 arrived_ns: sidecard::clock::now_ns(),
+                repeat: true,
                 ..Default::default()
             },
             None => return Ok(None),
@@ -272,9 +274,9 @@ fn keyframe_requests_reach_the_encoder_idle_or_busy() {
         .enable_all()
         .build()
         .unwrap();
-    let run = |fps: u32, tag: &str| {
+    let run = |rate: &str, tag: &str| {
         let name = format!("sidecar-kf-{}-{tag}", std::process::id());
-        let _src = source(&name, fps);
+        let _src = source(&name, rate);
         rt.block_on(async {
             let (tx, mut rx) = mpsc::channel(4);
             let cap = Capture::spawn(
@@ -319,7 +321,7 @@ fn keyframe_requests_reach_the_encoder_idle_or_busy() {
 
     // 1 frame/s: the screen is "idle" after a frame, so the last picture is
     // re-encoded as an IDR right away, without a new capture (no tick).
-    let forced = run(1, "idle");
+    let forced = run("1/1", "idle");
     assert_eq!(forced.len(), 1, "exactly one IDR per request: {forced:?}");
     let (after, tick) = forced[0];
     assert!(tick.is_none(), "idle keyframe should re-encode, not wait");
@@ -329,7 +331,54 @@ fn keyframe_requests_reach_the_encoder_idle_or_busy() {
     );
 
     // 30 frames/s: one IDR, soon.
-    let forced = run(30, "busy");
+    let forced = run("30/1", "busy");
     assert_eq!(forced.len(), 1, "exactly one IDR per request: {forced:?}");
     assert!(forced[0].0 < Duration::from_millis(200), "{forced:?}");
+}
+
+#[test]
+fn keep_alive_resends_the_last_picture_after_a_second_of_silence() {
+    if !enabled() {
+        return;
+    }
+    let name = format!("sidecar-ka-{}", std::process::id());
+    let _src = source(&name, "1/5"); // one frame every 5 s
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(4);
+        let _cap = Capture::spawn(
+            CaptureSpec {
+                target: name.clone(),
+                width: 320,
+                height: 240,
+                max_fps: 60,
+            },
+            || {
+                Ok(Box::new(KeyframeSink {
+                    pending: None,
+                    have_picture: false,
+                }) as Box<dyn FrameSink>)
+            },
+            tx,
+        )
+        .unwrap();
+        let first = next(&mut rx, Duration::from_secs(20))
+            .await
+            .unwrap_or_else(|| panic!("no frame\n{}", pw_state()));
+        assert!(!first.times.repeat);
+        let t0 = Instant::now();
+        let again = next(&mut rx, Duration::from_secs(3))
+            .await
+            .expect("a keep-alive within 3 s");
+        let after = t0.elapsed();
+        assert!(again.times.repeat, "expected a re-sent picture");
+        assert_eq!(again.annexb, vec![0], "a keep-alive is not an IDR");
+        assert!(
+            (Duration::from_millis(900)..Duration::from_millis(1300)).contains(&after),
+            "keep-alive after {after:?}"
+        );
+    });
 }

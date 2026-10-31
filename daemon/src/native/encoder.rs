@@ -661,12 +661,13 @@ impl FrameSink for VaEncoder {
     fn encode(&mut self, force_idr: bool) -> Result<Option<Encoded>> {
         let mut times = match self.pending.take() {
             Some(t) => t,
-            // An idle keyframe: re-encode the last picture.
-            None if force_idr && self.have_picture => {
+            // Idle keyframe or keep-alive: re-encode the last picture.
+            None if self.have_picture => {
                 let n = now_ns();
                 StageTimes {
                     arrived_ns: n,
                     converted_ns: n,
+                    repeat: true,
                     ..Default::default()
                 }
             }

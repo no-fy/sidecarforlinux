@@ -94,8 +94,10 @@ pub trait FrameSink {
     /// source may release the buffer.
     fn convert(&mut self, frame: &Frame) -> anyhow::Result<Converted>;
 
-    /// Encode the last converted picture (an IDR if `force_idr`). `None` if
-    /// nothing was converted yet.
+    /// Encode the last converted picture (an IDR if `force_idr`). Called
+    /// again without a new `convert`, it re-encodes the same picture
+    /// (`times.repeat`): idle keyframes and the keep-alive. `None` if
+    /// nothing was converted yet, or the sink encodes elsewhere (hybrid).
     fn encode(&mut self, force_idr: bool) -> anyhow::Result<Option<Encoded>>;
 }
 
