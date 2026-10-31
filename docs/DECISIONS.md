@@ -223,7 +223,37 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - It draws into a `CAMetalLayer` with 2 drawables and `presentsWithTransaction = false`, and presents as soon as the GPU is done, with no display-link pacing. Only the newest decoded frame is drawn.
   - It reports `decoded_ns`, and the drawable's `presentedTime` as `displayed_ns`.
 - **Prior art:** OpenDisplay (GPL-3.0, so ideas only, no code read or copied; [prior-art.md](prior-art.md)) arrived at the same design independently. Its header suspects AVSampleBufferDisplayLayer of buffering about one extra frame and says moonlight-qt has a Metal path for the same reason. That's unverified; with Metal selected, the "decoded -> on screen" figure shows what an immediate present costs, and the felt A/B difference tells us about the layer.
-- **Default:** AVSampleBufferDisplayLayer, the renderer confirmed on your iPad, until Metal is confirmed there too.
+- **Default (since 2026-10-31): Metal.** In your A/B on an iPad Air M4 (iPadOS 27, USB) Metal **felt better** than AVSampleBufferDisplayLayer. That's your subjective verdict; AVSampleBufferDisplayLayer reports no display time, so there's no number to compare. AVSampleBufferDisplayLayer stays selectable as a fallback. Fresh installs start on Metal; existing installs keep the saved choice.
 - **Testability:** everything but the `UIView` (decoder, newest-frame slot, shader, renderer switch, feedback) lives in `SidecarNet` and runs in the macOS CI job.
 - **Undo:** delete the Metal view and the switch; the AVSampleBufferDisplayLayer path is unchanged except that it now waits for a keyframe after a switch.
+
+## D21. How the Metal renderer hands frames to the screen
+
+- **Measured (your run, 2026-10-31):** iPad Air M4, iPadOS 27, USB, KDE custom mode 2360×1640@120 on Virtual-ipad (747–1135 frames per 10 s sent), round-1 Metal path:
+  - decode 1.9 / 2.3 ms (p50/p95);
+  - **decoded → on screen 38–46 / 50–60 ms**;
+  - about 50 % of frames replaced by a newer one (≈ 110 fps into a 60 Hz panel).
+- **Why that long** (an inference from Apple's documentation, not measured step by step):
+  - Apple's "Understanding hitches in your app" describes the render loop: a change handed to Core Animation waits for the next commit deadline (a vsync), the render server composites it during the next refresh interval, and it is shown at the vsync after that.
+  - On top of that, round 1 had 2 drawables and frames arriving faster than the panel. `nextDrawable()` blocked until the next vsync, and each drawable queued behind the previous one. A forum report describes the same effect: "present as soon as possible after all the other frames in the queue have been presented".
+  - ≈ 8 ms average wait + 2 × 16.7 ms ≈ 42 ms, which matches the measurement.
+- **Choice: three presentation modes**, in ⚙︎ → Video renderer, compared on the iPad itself (readout under the latency line) and in the daemon log:
+  1. **Display link (default):** `CAMetalDisplayLink` on its own run-loop thread with `preferredFrameLatency = 1`. Apple: "The only acceptable values are 1.0 and 2.0" and "The final latency may be bigger if the system needs more time".
+     - Once per refresh it draws the newest decoded frame into the drawable the link hands out, and draws nothing if no frame is new.
+     - 3 drawables (Apple's default).
+     - Nothing queues; whether latency 1 also shortens the compositor stage is what the test shows.
+  2. **UI update link (iOS 18+):** `UIUpdateLink` with `wantsImmediatePresentation`. Apple: it "requests immediate rendering of the display frame after the last CATransaction commit for the current UI update… the rendered display frame presents one frame duration sooner… primarily useful for pencil-drawing apps".
+     - The frame is drawn on the main thread in the `.beforeCATransactionCommit` phase and presented with that transaction (`presentsWithTransaction`; commit, `waitUntilScheduled`, `present()`, Apple's documented order), with `requiresContinuousUpdates`.
+     - It never waits for a drawable on the main thread: it skips the refresh if two are still in flight.
+     - **Assumption:** the immediate rendering also covers a Metal drawable presented in that transaction. The readout's "immediate %" (`UIUpdateInfo.isImmediatePresentationExpected`) shows whether iPadOS granted it.
+  3. **Present at once:** round 1, unchanged, as a fallback and baseline.
+- **Overlays:** Apple describes a single render server that composites every layer. I found no Apple documentation of an iOS path that bypasses it for a fullscreen Metal layer, so the pencil surface, ink and labels above the video stay. **Assumption:** they don't add a frame. Already done: the layer is opaque, `framebufferOnly`, and its drawable is the native 2360×1640, so no scaling pass.
+- **Not used (yet):** `wantsLowLatencyEventDispatch`. It would also change how pencil touches are delivered, and the pen path is fine.
+- **Sources:**
+  - [CAMetalDisplayLink](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink), [preferredFrameLatency](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/preferredframelatency), [metalDisplayLink(_:needsUpdate:)](https://developer.apple.com/documentation/quartzcore/cametaldisplaylinkdelegate/metaldisplaylink(_:needsupdate:))
+  - [UIUpdateLink](https://developer.apple.com/documentation/uikit/uiupdatelink), [wantsImmediatePresentation](https://developer.apple.com/documentation/uikit/uiupdatelink/wantsimmediatepresentation)
+  - [presentsWithTransaction](https://developer.apple.com/documentation/quartzcore/cametallayer/presentswithtransaction), [maximumDrawableCount](https://developer.apple.com/documentation/quartzcore/cametallayer/maximumdrawablecount), [presentedTime](https://developer.apple.com/documentation/metal/mtldrawable/presentedtime)
+  - [Understanding hitches in your app](https://developer.apple.com/documentation/xcode/understanding-hitches-in-your-app)
+  - forum thread [711033](https://developer.apple.com/forums/thread/711033) (not Apple staff)
+  - All read 2026-10-31. I found no newer iPadOS 26/27 presentation API in Apple's API reference or in web searches. I didn't watch the WWDC25/26 Metal sessions; WWDC25 "Go further with Metal 4 games" has a present-pacing sample worth a look if these modes aren't enough.
 

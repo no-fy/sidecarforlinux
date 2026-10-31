@@ -112,10 +112,23 @@ Why: pen input → frame encoded measured about 33 ms on your machine, and a 120
 | Piece | Status |
 |---|---|
 | Daemon logs `video on the iPad (p50/p95 ms, N frames in T s): decode … \| decoded -> on screen … \| received -> on screen … \| encoder out -> on screen …` every 10 s, next to the existing lines ([latency.md](latency.md#video-phase-2)) | **Tested:** unit tests, plus the **real Rust daemon** printing it in macOS CI from times sent by the iPad networking code. The decode times there are real VideoToolbox times on the CI Mac (1.8 ms p50 for 176×144); "on screen" came from a stand-in, not a screen. |
-| iPad ⚙︎ → **Video renderer: AVSampleBufferDisplayLayer / Metal** (default: AVSampleBufferDisplayLayer) | **Built but untested** (compiles against the iOS 26.5 SDK, no warnings) |
-| Metal renderer: async VideoToolbox decode into IOSurface NV12, newest frame wins, NV12 → RGB shader, aspect fit, 2 drawables, present at once, `presentedTime` reported as `displayed_ns` | **Tested on macOS** (same frameworks):<br>• Rust-made H.264 decodes into Metal-ready buffers, in order, each frame reported exactly once<br>• keyframe wait and keyframe requests<br>• the shader matches a CPU reference exactly (0/255 difference) on a Metal GPU<br>• aspect-fit bars<br>• renderer switch<br>**Untested:** presentation on a real screen. macOS never presents an offscreen layer, so CI saw 0 presented frames. |
+| iPad ⚙︎ → **Video renderer: AVSampleBufferDisplayLayer / Metal** | **Tested on your iPad Air M4** (iPadOS 27): the switch works; "0 not decoded" after switching. **Metal felt better** (your subjective verdict) and is the default since round 2. |
+| Metal renderer: async VideoToolbox decode into IOSurface NV12, newest frame wins, NV12 → RGB shader, aspect fit, 2 drawables, present at once, `presentedTime` reported as `displayed_ns` | **Tested on macOS** (same frameworks):<br>• Rust-made H.264 decodes into Metal-ready buffers, in order, each frame reported exactly once<br>• keyframe wait and keyframe requests<br>• the shader matches a CPU reference exactly (0/255 difference) on a Metal GPU<br>• aspect-fit bars<br>• renderer switch<br>**Tested on your iPad Air M4:** frames reach the screen and report their presented time: decode 1.9 / 2.3 ms, decoded → on screen 38–46 / 50–60 ms (p50 / p95). |
 | AVSampleBufferDisplayLayer decode/display times | **Unknowable with public API:** the layer decodes and displays inside iPadOS with no per-frame callback. It reports 0, and the daemon line says so. |
 | Prior art | OpenDisplay (GPL-3.0, ideas only) uses the same design; see [prior-art.md](prior-art.md). |
+
+## Second-screen lag, round 2 (2026-10-31, branch `feature/metal-display-link`)
+
+Your round-1 numbers put most of the iPad's share in the hand-off to the screen: decoded → on screen ≈ 40 ms, about 2.5 refreshes at 60 Hz ([DECISIONS D21](DECISIONS.md) explains why).
+
+| Piece | Status |
+|---|---|
+| Metal is the default renderer; AVSampleBufferDisplayLayer stays selectable | **Built but untested** (a default change only; your saved choice already says Metal) |
+| ⚙︎ → Video renderer → **Metal · display link** (default): `CAMetalDisplayLink`, `preferredFrameLatency = 1`, newest frame once per refresh | **Built but untested** on a device. **Tested on macOS:** every frame reported exactly once, layer set up as intended, mode switch mid-stream. |
+| **Metal · UI update link (iOS 18+)**: `UIUpdateLink.wantsImmediatePresentation`, drawn and presented inside the UI update's transaction | **Built but untested** on a device; the drawing path is tested on macOS (the UIUpdateLink itself is iPad-only). **Assumption:** immediate presentation covers our Metal drawable. |
+| **Metal · present at once**: round 1, unchanged | Tested on your iPad (round 1) |
+| On-iPad readout per mode (decoded → screen, submit → screen, shown/s, on target, immediate %) | **Tested on macOS** (formatting); built but untested on the iPad |
+| Overlays above the video (pencil surface, labels) | Left in place: no Apple-documented iOS compositor bypass found (**assumption** that they cost no frame) |
 
 ## Things you should know
 
