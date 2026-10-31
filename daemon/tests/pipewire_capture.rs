@@ -210,3 +210,126 @@ fn falls_back_to_shm_and_a_slow_sink_gets_fresh_pictures() {
         slow.len()
     );
 }
+
+/// Records whether each encode was a forced IDR (annexb = [1]) or not ([0]),
+/// and re-encodes its last picture when forced while idle, like VaEncoder.
+struct KeyframeSink {
+    pending: Option<sidecard::native::stats::StageTimes>,
+    have_picture: bool,
+}
+
+impl FrameSink for KeyframeSink {
+    fn dmabuf_formats(&self) -> Vec<(u32, Vec<u64>)> {
+        Vec::new()
+    }
+
+    fn convert(&mut self, f: &Frame) -> anyhow::Result<Converted> {
+        let mut t = f.times;
+        t.converted_ns = sidecard::clock::now_ns();
+        self.pending = Some(t);
+        self.have_picture = true;
+        Ok(Converted::Done)
+    }
+
+    fn encode(&mut self, force: bool) -> anyhow::Result<Option<Encoded>> {
+        let times = match self.pending.take() {
+            Some(t) => t,
+            None if force && self.have_picture => sidecard::native::stats::StageTimes {
+                arrived_ns: sidecard::clock::now_ns(),
+                ..Default::default()
+            },
+            None => return Ok(None),
+        };
+        Ok(Some(Encoded {
+            annexb: vec![force as u8],
+            width: 320,
+            height: 240,
+            times,
+        }))
+    }
+}
+
+/// The next encoded frame within `within`, or None.
+async fn next(rx: &mut mpsc::Receiver<Event>, within: Duration) -> Option<Encoded> {
+    let deadline = Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(left, rx.recv()).await {
+            Ok(Some(Event::Frame(e))) => return Some(e),
+            Ok(Some(Event::Format(_))) => {}
+            Ok(other) => panic!("capture ended: {other:?}"),
+            Err(_) => return None,
+        }
+    }
+}
+
+#[test]
+fn keyframe_requests_reach_the_encoder_idle_or_busy() {
+    if !enabled() {
+        return;
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let run = |fps: u32, tag: &str| {
+        let name = format!("sidecar-kf-{}-{tag}", std::process::id());
+        let _src = source(&name, fps);
+        rt.block_on(async {
+            let (tx, mut rx) = mpsc::channel(4);
+            let cap = Capture::spawn(
+                CaptureSpec {
+                    target: name.clone(),
+                    width: 320,
+                    height: 240,
+                    max_fps: 60,
+                },
+                || {
+                    Ok(Box::new(KeyframeSink {
+                        pending: None,
+                        have_picture: false,
+                    }) as Box<dyn FrameSink>)
+                },
+                tx,
+            )
+            .unwrap();
+            let first = next(&mut rx, Duration::from_secs(20))
+                .await
+                .unwrap_or_else(|| panic!("no frame\n{}", pw_state()));
+            assert_eq!(first.annexb, vec![0]);
+            let asked = Instant::now();
+            cap.request_keyframe();
+            // Everything encoded in the next 600 ms.
+            let mut forced = Vec::new();
+            let window_end = asked + Duration::from_millis(600);
+            while let Some(e) = next(
+                &mut rx,
+                window_end.saturating_duration_since(Instant::now()),
+            )
+            .await
+            {
+                if e.annexb == [1] {
+                    forced.push((asked.elapsed(), e.times.tick_ns));
+                }
+            }
+            drop(cap);
+            forced
+        })
+    };
+
+    // 1 frame/s: the screen is "idle" after a frame, so the last picture is
+    // re-encoded as an IDR right away, without a new capture (no tick).
+    let forced = run(1, "idle");
+    assert_eq!(forced.len(), 1, "exactly one IDR per request: {forced:?}");
+    let (after, tick) = forced[0];
+    assert!(tick.is_none(), "idle keyframe should re-encode, not wait");
+    assert!(
+        after < Duration::from_millis(300),
+        "idle keyframe took {after:?}"
+    );
+
+    // 30 frames/s: one IDR, soon.
+    let forced = run(30, "busy");
+    assert_eq!(forced.len(), 1, "exactly one IDR per request: {forced:?}");
+    assert!(forced[0].0 < Duration::from_millis(200), "{forced:?}");
+}
