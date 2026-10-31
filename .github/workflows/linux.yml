@@ -29,16 +29,24 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Start PipeWire + WirePlumber (native capture tests; no GPU, shared memory only)
+      - name: Start D-Bus + PipeWire + WirePlumber (native capture tests; no GPU, shared memory only)
         run: |
           XDG_RUNTIME_DIR=$(mktemp -d)
-          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          chmod 700 "$XDG_RUNTIME_DIR"
           export XDG_RUNTIME_DIR
+          DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
+          export DBUS_SESSION_BUS_ADDRESS
+          {
+            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+            echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+          } >> "$GITHUB_ENV"
           pipewire > "$XDG_RUNTIME_DIR/pipewire.log" 2>&1 &
           sleep 1
           wireplumber > "$XDG_RUNTIME_DIR/wireplumber.log" 2>&1 &
-          sleep 2
+          sleep 3
           pw-cli info 0 | head -4
+          pgrep -a wireplumber
+          wpctl status | head -30 || true
       - name: Unit + end-to-end tests (fake iPad over TLS, no uinput)
         env:
           SIDECAR_REQUIRE_FFMPEG: "1"
@@ -93,6 +101,14 @@ jobs:
           grep -q "PipeWire format: XR24 640x480" out/hybrid-run.txt
           grep -q "video stages p50/p95" out/hybrid-run.txt
           grep -Eq 'video=VideoRx \{ connections: 1, configs: [1-9][0-9]*, frames: [1-9][0-9]*' out/hybrid-fake.txt
+      - name: PipeWire diagnostics (on failure)
+        if: failure()
+        run: |
+          pgrep -a pipewire || true
+          pgrep -a wireplumber || true
+          tail -n 60 "$XDG_RUNTIME_DIR"/pipewire.log "$XDG_RUNTIME_DIR"/wireplumber.log || true
+          pw-cli ls Node || true
+          pw-link -l || true
       - uses: actions/upload-artifact@v7
         if: always()
         with:
