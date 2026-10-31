@@ -395,7 +395,7 @@ impl VideoPlan {
             backend: a
                 .video_backend
                 .clone()
-                .unwrap_or_else(|| env.cfg.video.backend.clone()),
+                .unwrap_or_else(|| env.cfg.video.backend().to_string()),
             va_device: (!env.cfg.video.va_device.is_empty())
                 .then(|| PathBuf::from(&env.cfg.video.va_device)),
             encoder: match a

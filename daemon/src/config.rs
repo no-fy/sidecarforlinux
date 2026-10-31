@@ -53,7 +53,8 @@ output = ""
 # existing PipeWire video node by id or name; for testing)
 mode = "off"
 # Who captures and encodes. Default: native when this sidecard was built
-# with it (scripts/install-daemon.sh says if not), else gstreamer.
+# with it (scripts/install-daemon.sh says if not) and the encoder isn't x264,
+# else gstreamer.
 #   native     inside sidecard: PipeWire DMA-BUF -> VA-API, zero copy, as
 #              fast as the virtual monitor refreshes, per-stage timing log,
 #              keyframes on request (tested on an Intel UHD 630)
@@ -106,6 +107,7 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 pub struct VideoCfg {
     pub mode: String,
+    /// Empty = automatic, see [`VideoCfg::backend`].
     pub backend: String,
     pub encoder: String,
     pub va_device: String,
@@ -117,7 +119,7 @@ pub struct VideoCfg {
     pub max_fps: u32,
 }
 
-/// The default `[video] backend`: "native" when this build has it (Linux,
+/// The automatic `[video] backend`: "native" when this build has it (Linux,
 /// cargo feature native-video; faster on real hardware, DECISIONS D22),
 /// else "gstreamer".
 pub fn default_backend() -> &'static str {
@@ -128,11 +130,25 @@ pub fn default_backend() -> &'static str {
     }
 }
 
+impl VideoCfg {
+    /// The backend to use: the configured one, or automatic: x264 needs
+    /// gst-launch (native encodes with VA-API only), else [`default_backend`].
+    pub fn backend(&self) -> &str {
+        if !self.backend.is_empty() {
+            &self.backend
+        } else if self.encoder == "x264" {
+            "gstreamer"
+        } else {
+            default_backend()
+        }
+    }
+}
+
 impl Default for VideoCfg {
     fn default() -> Self {
         VideoCfg {
             mode: "off".into(),
-            backend: default_backend().into(),
+            backend: String::new(),
             encoder: "vaapi".into(),
             va_device: String::new(),
             target_usage: 7,
@@ -266,7 +282,7 @@ impl Config {
         }
         if !matches!(
             self.video.backend.as_str(),
-            "gstreamer" | "native" | "hybrid"
+            "" | "gstreamer" | "native" | "hybrid"
         ) {
             bail!("video.backend must be gstreamer, native or hybrid");
         }
@@ -336,7 +352,11 @@ mod tests {
         assert_eq!(c.connection.port, sidecar_protocol::DEFAULT_PORT);
         assert_eq!(c.tablet.area, [0.0, 0.0, 1.0, 1.0]);
         assert!(c.keyboard_keys().is_empty());
-        assert_eq!(c.video.backend, default_backend());
+        assert_eq!(c.video.backend(), default_backend());
+        // x264 without a backend picks the one that can run it.
+        let x: Config = toml::from_str("[video]\nencoder = \"x264\"\n").unwrap();
+        x.validate().unwrap();
+        assert_eq!(x.video.backend(), "gstreamer");
     }
 
     #[cfg(target_os = "linux")]
