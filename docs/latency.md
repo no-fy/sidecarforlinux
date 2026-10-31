@@ -39,7 +39,7 @@ With `--video`, `sidecard run` logs three lines every 10 s (from the iPad's `Vid
 |---|---|
 | `video latency (pen input -> frame encoded, after a pause)` | The PC's share: KWin redraw, the virtual monitor's capture tick, colour conversion, encode. |
 | `video latency (encoder out -> iPad received)` | USB/Wi-Fi + TLS. Under 1 ms over USB. |
-| `video on the iPad (p50/p95 ms, N frames in T s): decode … \| decoded -> on screen … \| received -> on screen … \| encoder out -> on screen … \| R replaced by a newer frame, F not decoded` | The iPad's share, with the **Metal** renderer only (⚙︎ → Video renderer). |
+| `video on the iPad (p50/p95 ms, N frames in T s): decode … \| decoded -> on screen … \| received -> on screen … \| encoder out -> on screen … \| R replaced by a newer frame, F not decoded` | The iPad's share, with the **Metal** renderer only (the default; ⚙︎ → Video renderer). |
 
 How to read the iPad line:
 - **decode**: last byte received → VideoToolbox handed back the picture.
@@ -50,7 +50,7 @@ How to read the iPad line:
 - **replaced by a newer frame**: decoded but never shown, because a newer one was ready first. The Metal renderer always shows the newest frame. If the PC sends more than 60 fps, the 60 Hz iPad can't show them all, so this number grows.
 - **not decoded**: decode errors, or frames before the first keyframe after a renderer switch. The iPad asks for a keyframe, but the daemon can't force one yet (D18), so it waits for the next one: every 2 s.
 
-With **AVSampleBufferDisplayLayer** (the default renderer), the line says the times aren't reported. That layer decodes and displays inside iPadOS and has no per-frame callback for either, so decode and display time are unknowable there with public API. Comparing it with Metal is therefore by feel, or with a camera (below), plus the Metal numbers showing how much the iPad side can cost at all.
+With **AVSampleBufferDisplayLayer** (the fallback renderer), the line says the times aren't reported. That layer decodes and displays inside iPadOS and has no per-frame callback for either, so decode and display time are unknowable there with public API. Comparing it with Metal is therefore by feel, or with a camera (below), plus the Metal numbers showing how much the iPad side can cost at all.
 
 Rough total, pencil to iPad screen: touch → uinput (≈ 9 ms p50) + pen input → frame encoded (≈ 33 ms measured) + encoder out → on screen (Metal line). That's a sum of medians, not a measured distribution.
 
@@ -65,7 +65,8 @@ Rough total, pencil to iPad screen: touch → uinput (≈ 9 ms p50) + pen input 
 | 2026-10-30 | CI ubuntu runner, **fake iPad** over TCP+TLS loopback, 240 Hz samples batched at 120 Hz | 5.34 / 9.91 / 10.22 ms | 0.08 / 0.10 ms | 0.09 ms | **tested** (CI artifact `uinput-evidence/latency-loopback.txt`) |
 | 2026-10-30 | MacBook Pro 16" (t2linux 7.2.11, KDE 6.8.2) + iPad Air (60 Hz display) + Pencil Pro over **USB** (usbmuxd), 30 s of drawing, 6786 samples in 1729 batches | 8.62 / 16.33 / 16.66 ms (max 17.19) | 0.68 / 1.00 ms | 0.69 ms | **tested** (your run) |
 | 2026-10-30 | Phase 2 video, same setup, `--video virtual`, VA-API H.264 2360×1640, 20 Mbit/s: **encoder out → iPad received** | p50 1.1–1.8 ms, p95 2.5–3.7 ms (4546 frames) | | 0.5–1.0 ms | **tested** (your run). Excludes capture, encode, decode and display. |
-| — | Same, **iPad decode + display** (Metal renderer): received → decoded → on screen | *to be measured: MORNING.md §12* | | | built but untested |
+| 2026-10-31 | iPad Air **M4**, iPadOS 27, USB, KDE custom mode 2360×1640@120 (747–1135 frames per 10 s), **Metal, present at once** (round 1): received → decoded → on screen | decode 1.9 / 2.3 ms; **decoded → on screen 38–46 / 50–60 ms**; received → on screen 40–48 / 52; encoder out → on screen 41–49 / 53 (p50 / p95, about 10 windows); ≈ 50 % replaced by a newer frame | | | **tested** (your run). pen input → frame encoded also dropped to 17–21 ms p50 at 120 Hz (was 33). |
+| — | Same, Metal **display link** / **UI update link** (DECISIONS D21) | *to be measured: MORNING.md §13* | | | built but untested |
 | — | MacBook Pro 16" + iPad Air over **Wi-Fi** | *to be measured: MORNING.md step 9* | | | not measured |
 
 How to read the USB row:
@@ -93,7 +94,7 @@ SIDECAR_CONFIG_DIR=/tmp/pc sidecard latency --connect 127.0.0.1:47811 --dry-run 
 
 ## Levers if it's too slow
 
-- **Video renderer (⚙︎ → Video renderer → Metal):** decodes with VideoToolbox in the app and presents each frame the moment the GPU is done, always the newest one. Built but untested on a device.
+- **Video renderer (⚙︎ → Video renderer):** Metal (default) decodes with VideoToolbox in the app and always shows the newest frame. How it hands frames to the screen is selectable (display link, UI update link, present at once), because that hand-off is most of the iPad's ~40 ms; see DECISIONS D21. On the iPad, the readout under the latency line compares the modes without the PC.
 
 - **Predicted touches:** the iPad app can send UIKit's predicted samples (⚙︎ → "Send predicted touches") and the daemon can inject them (`use_predicted = true`). This hides about one frame of coalescing delay, at the cost of occasional overshoot.
 - **ProMotion iPads (120 Hz):** they halve the coalescing wait. The iPad Air is 60 Hz.

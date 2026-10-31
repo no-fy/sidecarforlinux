@@ -244,7 +244,9 @@ Paste the terminal output either way, especially any GStreamer error. If VA-API 
 
 InkLink (<https://github.com/RakeRaven/inklink>, MIT, 2 days old) has the same goal; see DECISIONS D1. If you want to propose joining forces, that's your call; I didn't contact anyone.
 
-## 12. Second-screen lag: where the iPad spends its time (A/B, 10 min) → **paste back**
+## 12. Second-screen lag: where the iPad spends its time (A/B, 10 min) → **done 2026-10-31**
+
+> **Result (your run, iPad Air M4, iPadOS 27):** Metal felt better than AVSampleBufferDisplayLayer and is now the default. Metal measured decode 1.9 ms but decoded → on screen ≈ 40 ms, which §13 goes after. The steps below are kept for reference; the menu now has more entries (§13).
 
 The iPad app has two video renderers (⚙︎ → **Video renderer**):
 - **AVSampleBufferDisplayLayer**, the default and the one you've used so far. iPadOS decodes and displays inside the layer, and it reports neither time.
@@ -280,6 +282,42 @@ The iPad app has two video renderers (⚙︎ → **Video renderer**):
    Add one sentence: does B feel different from A?
 
 What the lines mean is in [latency.md → Video](latency.md#video-phase-2). The ones from step 3 say "not reported"; that's expected for AVSampleBufferDisplayLayer.
+
+## 13. Second-screen lag, round 2: how the frame reaches the screen (15 min) → **paste back**
+
+The Metal renderer now has three ways to hand a frame to the screen (⚙︎ → **Video renderer**):
+- **Metal · display link**: the new default. It draws the newest frame once per refresh, in step with the display.
+- **Metal · UI update link (iOS 18+)**: draws inside iPadOS's UI update and asks for "immediate presentation", which Apple says shows the frame one refresh sooner.
+- **Metal · present at once (round 1)**: what you tested in §12.
+
+The iPad now shows its own readout under the latency line, once a second:
+`Metal · display link: decoded → screen 24.1/31.0 ms · submit → screen 16.9 ms · 59 shown/s · on target 100%`
+
+1. **Install the iPad app from the `feature/metal-display-link` branch.** The daemon hasn't changed since round 1; keep the one you have.
+
+   ```bash
+   run=$(gh run list -R no-fy/sidecarforlinux -w ios -b feature/metal-display-link -s success -L 1 --json databaseId -q '.[0].databaseId')
+   gh run download "$run" -R no-fy/sidecarforlinux -n SidecarPad-ipa -D ~/sidecar-ipa-r2
+   scripts/resign-ipad.sh ~/sidecar-ipa-r2/SidecarPad.ipa
+   ```
+
+2. Same setup as §12 (your 120 Hz custom mode is fine):
+
+   ```bash
+   systemctl --user stop sidecard 2>/dev/null
+   sidecard run --video virtual 2>&1 | tee ~/sidecar-r2.log
+   ```
+
+3. For **each** of the three Metal entries, in this order (display link, UI update link, present at once):
+   1. Pick it in ⚙︎ → Video renderer. The switch is instant: the decoder keeps running.
+   2. Draw continuously in Krita for 30 s.
+   3. While drawing, **note the iPad readout line** (or take a screenshot) and how it feels.
+4. **Send back:**
+   - the three readout lines (or screenshots);
+   - `grep -E 'video latency|video on the iPad' ~/sidecar-r2.log`, saying roughly when you switched (the log line comes every 10 s, so give each mode 30 s);
+   - which mode feels best.
+
+If the UI update link entry shows `immediate 0%`, iPadOS didn't grant immediate presentation for our frames; that's worth knowing too. If any mode goes black or says `Metal video: …`, switch to another and send a screenshot.
 
 ---
 
