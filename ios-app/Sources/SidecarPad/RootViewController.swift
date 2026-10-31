@@ -105,6 +105,11 @@ final class AppController: PeerServerDelegate, PencilCaptureDelegate {
         server?.send(.penBatch(batch))
     }
 
+    func capture(_ view: PencilCaptureView, touches: TouchBatch) {
+        guard connected else { return }
+        server?.sendTouches(touches)
+    }
+
     func capture(_ view: PencilCaptureView, gesture: PencilGesture) {
         root.flashGesture(gesture)
         guard connected else { return }
@@ -204,9 +209,15 @@ enum Settings {
         get { UserDefaults.standard.bool(forKey: "measureLayer") }
         set { UserDefaults.standard.set(newValue, forKey: "measureLayer") }
     }
+    /// Fingers become a touchscreen on the PC while its screen is shown
+    /// (D25): pinch-zoom, two-finger pan and rotate in apps with touch.
+    static var sendTouches: Bool {
+        get { UserDefaults.standard.object(forKey: "sendTouches") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "sendTouches") }
+    }
     /// While video is on, hide everything drawn over it (labels, ⚙︎, hover
     /// ring, local ink) so iPadOS has nothing to blend with the video
-    /// (D24). A finger tap shows the ⚙︎ for a few seconds.
+    /// (D24). A finger in the top-right corner shows the ⚙︎ for a few seconds.
     static var cleanScreen: Bool {
         get { UserDefaults.standard.bool(forKey: "cleanScreen") }
         set { UserDefaults.standard.set(newValue, forKey: "cleanScreen") }
@@ -244,7 +255,8 @@ final class RootViewController: UIViewController {
     private let menuButton = UIButton(type: .system)
     private var fingerprint = ""
     private var lastSurface: SurfaceInfo?
-    /// Clean screen: the overlays are shown for a moment after a finger tap.
+    /// Clean screen: the overlays are shown for a moment after a finger in
+    /// the top-right corner.
     private var peeking = false
     private var peekEnd: DispatchWorkItem?
 
@@ -275,12 +287,15 @@ final class RootViewController: UIViewController {
         capture.sendPredicted = Settings.sendPredicted
         capture.showInk = Settings.showInk
         view.addSubview(capture)
-        // Fingers don't draw (the pencil does), so a finger tap can bring
-        // the ⚙︎ back on a clean screen.
-        let tap = UITapGestureRecognizer(target: self, action: #selector(fingerTapped))
-        tap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-        tap.cancelsTouchesInView = false
-        capture.addGestureRecognizer(tap)
+        // Fingers go to the PC, except in the top-right corner of a clean
+        // screen, where the hidden ⚙︎ is: there a finger brings it back.
+        capture.keepsFingerTouch = { [weak self] p in
+            guard let self, Settings.cleanScreen, self.videoOn, !self.peeking else { return false }
+            let b = self.capture.bounds
+            guard CGRect(x: b.maxX - 100, y: b.minY, width: 100, height: 100).contains(p) else { return false }
+            self.peek()
+            return true
+        }
 
         for l in [statusLabel, latencyLabel, videoStatsLabel, gestureLabel] {
             l.translatesAutoresizingMaskIntoConstraints = false
@@ -381,14 +396,11 @@ final class RootViewController: UIViewController {
         }
         capture.showsHoverCursor = !clean
         capture.showInk = Settings.showInk && !clean
+        // Fingers only make sense on the PC's screen, not on a plain tablet.
+        capture.sendTouches = Settings.sendTouches && videoOn
     }
 
-    @objc private func fingerTapped() {
-        guard Settings.cleanScreen && videoOn else { return }
-        peek()
-    }
-
-    /// Shows the overlays for 6 s (restarted by each tap or menu use).
+    /// Shows the overlays for 6 s (restarted by each corner touch or menu use).
     private func peek() {
         guard Settings.cleanScreen && videoOn else { return }
         peeking = true
@@ -444,7 +456,14 @@ final class RootViewController: UIViewController {
             self?.updateOverlays()
             self?.rebuildMenu()
         }
-        let clean = UIAction(title: "Clean screen while video is on", subtitle: "tap with a finger to show ⚙︎",
+        let touches = UIAction(title: "Send finger touches to the PC", subtitle: "pinch, pan, rotate in touch apps",
+                               image: UIImage(systemName: "hand.point.up.left"),
+                               state: Settings.sendTouches ? .on : .off) { [weak self] _ in
+            Settings.sendTouches.toggle()
+            self?.updateOverlays()
+            self?.rebuildMenu()
+        }
+        let clean = UIAction(title: "Clean screen while video is on", subtitle: "touch the top-right corner to show ⚙︎",
                              image: UIImage(systemName: "rectangle.dashed"),
                              state: Settings.cleanScreen ? .on : .off) { [weak self] _ in
             Settings.cleanScreen.toggle()
@@ -493,7 +512,7 @@ final class RootViewController: UIViewController {
                           image: UIImage(systemName: "checkmark.shield"), attributes: .disabled) { _ in }
         menuButton.menu = UIMenu(children: [
             UIMenu(options: .displayInline, children: [wifi, pairWifi]),
-            UIMenu(options: .displayInline, children: [predicted, ink, clean, renderer]),
+            UIMenu(options: .displayInline, children: [predicted, ink, touches, clean, renderer]),
             UIMenu(options: .displayInline, children: [fp, forget, reset]),
         ])
     }

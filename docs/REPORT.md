@@ -106,6 +106,16 @@ A hand review also caught and fixed a bug that tests couldn't have shown without
 | Wi-Fi (pen + video) | **Tested** by you: "everything works great". Latency not measured. |
 | Bugs found on your machine, fixed in the daemon/app (**confirmed by you** after updating: replica switch recovers, one Virtual-ipad after iPad off/on, no ink flash, `gdppay` in the pipeline) | • Switching the display to replica killed the video until `sidecard` restarted. The video now restarts by itself (1 s, backing off to 10 s), also when KWin closes the monitor's stream; restart after an encoder kill is tested in the VM.<br>• Turning the iPad off and on added a second `Virtual-ipad`. The monitor is now removed whenever the pen session ends, and the encoder process is killed (tested in the VM).<br>• With "Show local ink" off, the last ink stroke flashed after every lift (iPad app fix: needs reinstalling the app).<br>• Ctrl-C was ignored while waiting to reconnect (tested in the VM).<br>• **Video lag:** the daemon held every frame until the next one started, because a raw H.264 stream only shows where a frame ends when the next one begins. That cost one frame interval while drawing, and up to 1 s at the end of a stroke (the screen stops changing, so the next frame is the 1 s keep-alive). The pipelines now end in `gdppay`, which frames each picture, so it goes out at once. Measured on real GStreamer at 2 fps: a frame was usable at 0.53 s before, 0.04 s now. |
 
+## Finger touches (2026-10-31, D25)
+
+| Item | Status |
+|---|---|
+| Protocol TouchBatch (0x13) + `touch` capability, Rust and Swift, shared golden vector | **Tested** (Rust tests here; Swift in macOS CI) |
+| Daemon touch mapper: MT protocol B frames, fingers grouped per UIKit event, palm rejection (pencil near, radius), cancel as `MT_TOOL_PALM` | **Tested** (9 unit tests) |
+| "Sidecar iPad Touch" uinput touchscreen: udev touchscreen, libinput touch capability, down/motion/up, palm → touch cancel | **Tested in CI** with the real kernel and libinput (`sidecard touch-demo`) |
+| iPad: finger capture (coalesced, time-ordered), sent only while video is on and to daemons that want touches; ⚙︎ toggle; clean screen's corner | **Built but untested** on the iPad |
+| Gestures in apps (Krita pan/zoom/rotate, browser pinch-zoom) over KWin | **Assumption** until your test (MORNING §18); 45 pt palm radius: **assumption** to tune |
+
 ## Defaults after round 3 (2026-10-31)
 
 | Item | Status |

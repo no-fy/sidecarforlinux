@@ -130,6 +130,7 @@ public final class PeerServer: @unchecked Sendable {
     private var wifiEnabled = true
     public var surface = SurfaceInfo(widthPt: 1180, heightPt: 820, scale: 2, pointsPerInch: 132)
     public var capabilities: UInt32 = Caps.gestures | Caps.haptics | Caps.hover | Caps.roll | Caps.predicted | Caps.video
+        | Caps.touch
 
     public init(identity: DeviceIdentity, trust: TrustStore, usbPort: UInt16 = SidecarProtocol.defaultPort) {
         self.identity = identity
@@ -219,6 +220,15 @@ public final class PeerServer: @unchecked Sendable {
 
     public func send(_ m: Message) {
         queue.async { self.current?.sendIfActive(m) }
+    }
+
+    /// Finger touches, only to a daemon that asked for them (Caps.touch:
+    /// newer sidecard with `[touch] enabled`).
+    public func sendTouches(_ b: TouchBatch) {
+        queue.async {
+            guard let c = self.current, c.peerCaps & Caps.touch != 0 else { return }
+            c.sendIfActive(.touchBatch(b))
+        }
     }
 
     public var hasActiveSession: Bool {
@@ -381,6 +391,8 @@ final class PeerConnection {
     private var state: State = .awaitingHello
     private var peerFingerprint: [UInt8] = []
     private var peerName = "PC"
+    /// The daemon's Hello caps (input channel).
+    fileprivate private(set) var peerCaps: UInt32 = 0
     private var receivedAt: UInt64 = 0
     fileprivate private(set) var sessionID: UInt64 = 0
     fileprivate private(set) var videoStarted = false
@@ -523,6 +535,7 @@ final class PeerConnection {
                 return
             }
             peerName = h.name
+            peerCaps = h.caps
             sessionID = h.sessionID
             let weTrust = server.trust.contains(peerFingerprint)
             send(.helloAck(HelloAck(trustsPeer: weTrust, caps: server.capabilities, surface: server.surface,

@@ -7,6 +7,7 @@ import UIKit
 protocol PencilCaptureDelegate: AnyObject {
     func capture(_ view: PencilCaptureView, batch: PenBatch)
     func capture(_ view: PencilCaptureView, gesture: PencilGesture)
+    func capture(_ view: PencilCaptureView, touches: TouchBatch)
 }
 
 /// Full-screen surface that turns every Apple Pencil signal into protocol
@@ -16,7 +17,8 @@ protocol PencilCaptureDelegate: AnyObject {
 /// * hover: `UIHoverGestureRecognizer` (zOffset, angles, roll);
 /// * double-tap / squeeze: `UIPencilInteraction` (iOS 17.5 API);
 /// * Pencil Pro haptics: `UICanvasFeedbackGenerator`.
-/// Finger touches are ignored (palm rejection by construction).
+/// Finger touches go out separately (TouchBatch) when `sendTouches` is on:
+/// the PC turns them into a touchscreen and does the palm rejection.
 final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
     weak var delegate: PencilCaptureDelegate?
     var sendPredicted = false
@@ -24,6 +26,16 @@ final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
         // Drop the last stroke, or `end()` would flash it again later.
         didSet { if !showInk { ink.clear() } }
     }
+    /// Send finger touches (only while the PC's screen is shown).
+    var sendTouches = false {
+        didSet { if !sendTouches { cancelFingers() } }
+    }
+    /// A finger landing where this returns true belongs to the app (the
+    /// clean screen's corner that shows ⚙︎), not to the PC.
+    var keepsFingerTouch: ((CGPoint) -> Bool)?
+    private var fingerIDs: [ObjectIdentifier: UInt16] = [:]
+    private var ownFingers: Set<ObjectIdentifier> = []
+    private var nextFingerID: UInt16 = 0
     /// The teal hover ring. Off on a clean screen (the PC draws its own cursor).
     var showsHoverCursor = true {
         didSet { if !showsHoverCursor { cursor.isHidden = true } }
@@ -116,6 +128,7 @@ final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
     // MARK: contact
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        fingers(touches, event: event, phase: .down)
         guard let t = pencilTouch(touches) else { return }
         pendingOut?.cancel()
         touching = true
@@ -132,6 +145,7 @@ final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        fingers(touches, event: event, phase: .move)
         guard let t = pencilTouch(touches), touching else { return }
         let coalesced = event?.coalescedTouches(for: t) ?? [t]
         var out = coalesced.map { sample(from: $0, phase: .move, extraFlags: SampleFlags.coalesced) }
@@ -144,11 +158,66 @@ final class PencilCaptureView: UIView, UIPencilInteractionDelegate {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        fingers(touches, event: event, phase: .up)
         finish(touches, event: event, phase: .up)
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        fingers(touches, event: event, phase: .cancel)
         finish(touches, event: event, phase: .cancel)
+    }
+
+    // MARK: fingers
+
+    /// Finger (`.direct`) touches → TouchSamples, every coalesced position,
+    /// in time order so fingers moving together reach the PC together.
+    private func fingers(_ touches: Set<UITouch>, event: UIEvent?, phase: TouchPhase) {
+        var out: [TouchSample] = []
+        for t in touches where t.type == .direct {
+            let key = ObjectIdentifier(t)
+            if phase == .down {
+                if let keep = keepsFingerTouch, keep(t.location(in: self)) {
+                    ownFingers.insert(key)
+                    continue
+                }
+                guard sendTouches else { continue }
+                nextFingerID &+= 1
+                fingerIDs[key] = nextFingerID
+            }
+            if ownFingers.contains(key) {
+                if phase == .up || phase == .cancel { ownFingers.remove(key) }
+                continue
+            }
+            guard let id = fingerIDs[key] else { continue }
+            let positions = phase == .move ? (event?.coalescedTouches(for: t) ?? [t]) : [t]
+            for (i, c) in positions.enumerated() {
+                let (x, y) = norm(c.preciseLocation(in: self))
+                out.append(TouchSample(timestampNs: SessionClock.ns(fromUptime: c.timestamp), id: id, phase: phase,
+                                       flags: i < positions.count - 1 ? SampleFlags.coalesced : 0, x: x, y: y,
+                                       majorRadiusPt: Float(c.majorRadius)))
+            }
+            if phase == .up || phase == .cancel { fingerIDs[key] = nil }
+        }
+        sendFingers(out)
+    }
+
+    private func sendFingers(_ samples: [TouchSample]) {
+        guard !samples.isEmpty else { return }
+        // Stable sort by time (index breaks ties).
+        let ordered = samples.enumerated()
+            .sorted { ($0.element.timestampNs, $0.offset) < ($1.element.timestampNs, $1.offset) }
+            .map(\.element)
+        delegate?.capture(self, touches: TouchBatch(sendTimeNs: SessionClock.nowNs(), touches: ordered))
+    }
+
+    /// Cancel every finger the PC knows about (sending switched off).
+    private func cancelFingers() {
+        let now = SessionClock.nowNs()
+        let out = fingerIDs.values.sorted().map {
+            TouchSample(timestampNs: now, id: $0, phase: .cancel, flags: 0, x: 0, y: 0, majorRadiusPt: 0)
+        }
+        fingerIDs.removeAll()
+        sendFingers(out)
     }
 
     private func finish(_ touches: Set<UITouch>, event: UIEvent?, phase: PenPhase) {

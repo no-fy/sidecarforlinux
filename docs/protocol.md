@@ -121,6 +121,7 @@ frame = length:u32le  type:u8  payload[length - 1]
 - `1<<4` roll (Pencil Pro)
 - `1<<5` hover
 - `1<<6` HEVC decode
+- `1<<7` touch: the iPad sends TouchBatch (in HelloAck); the daemon wants it (in Hello). The iPad sends touches only to a daemon that set it.
 
 ### 0x03 PairCommit (I→D): `[u8;32]` commitment
 ### 0x04 PairNonce (D→I): `[u8;32]`
@@ -188,6 +189,33 @@ frame = length:u32le  type:u8  payload[length - 1]
 | 12 | f32 | points per inch (132 for 264-ppi iPads) |
 
 The daemon recreates its tablet device when the size changes.
+
+### 0x13 TouchBatch (I→D)
+Finger touches; the pencil stays in PenBatch.
+
+| Off | Type | Field |
+|---|---|---|
+| 0 | u64 | send_time_ns (iPad clock) |
+| 8 | u16 | count |
+| 10 | u16 | touch_len (24 in v1.0) |
+| 12 | TouchSample × count | |
+
+**TouchSample (24 bytes in v1.0):**
+
+| Off | Type | Field |
+|---|---|---|
+| 0 | u64 | timestamp_ns: `UITouch.timestamp` on the iPad clock |
+| 8 | u16 | id: stable from down to up/cancel, may be reused afterwards |
+| 10 | u8 | phase: 1 down, 2 move, 3 up, 4 cancel (iPadOS took the touch away) |
+| 11 | u8 | flags: bit1 coalesced (as PenSample) |
+| 12 | f32 | x: 0..1, as PenSample |
+| 16 | f32 | y: 0..1 |
+| 20 | f32 | major_radius: `UITouch.majorRadius` in points (palms are much larger than fingers) |
+
+**Semantics:**
+- Every coalesced position is sent, in time order. Touches of one UIKit event share a timestamp; the daemon puts them in one evdev frame.
+- The iPad sends touches only while it shows the PC's screen (video on) and the user hasn't switched them off.
+- Palm rejection is the daemon's: it ignores touches while the pencil is in proximity, and touches above a radius.
 
 ### 0x20 Haptic (D→I)
 `u8 kind` (1 alignment, 2 path completed), `u8 + u16` reserved, `f32 x`, `f32 y`.

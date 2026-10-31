@@ -346,3 +346,17 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - **Assumption, untested:** the layer's frames already skip the compositor with the overlays up, so the gain there may be nil. Judge by slow motion; with the layer's timing on, "optimized compositing" near the share of frames shown means nothing is left to gain.
 - **Result (your test, 2026-10-31):** no noticeable difference with the clean screen. It stays as an option, off by default.
 - **Undo:** select Metal in the menu; switch the clean screen off.
+
+## D25. Finger touches become a touchscreen on the PC
+
+- **Why:** with the iPad as a second screen, the mouse and the pencil work, but fingers did nothing, so pinch-zoom, two-finger pan and canvas rotation were missing (your request, 2026-10-31).
+- **Choice:** the iPad sends finger touches (TouchBatch, protocol `0x13`), and the daemon creates a second virtual device, "Sidecar iPad Touch": a direct multitouch screen (Linux MT protocol B, 10 slots, `INPUT_PROP_DIRECT`) the size of the iPad, mapped to the same output as the pen. Apps that support touch then do their own gestures (Krita's canvas pan, zoom and rotate, browsers' pinch-zoom, scrolling).
+  - **Not chosen:** turning gestures into keyboard shortcuts or scroll events on the iPad. That would work in fewer apps and need per-app tables.
+- **Palm rejection, in the daemon** (testable there):
+  - while the pencil is in proximity, new fingers are ignored and fingers already down are cancelled;
+  - touches larger than `[touch] palm_radius_pt` (45 pt `UITouch.majorRadius`, an **assumption** to tune) are ignored, or cancelled when a finger spreads into one.
+  - A cancel marks the slot `MT_TOOL_PALM` before ending it. libinput then reports a touch *cancel*, so apps drop the gesture instead of acting on a lift. CI checks this with the real libinput (`sidecard touch-demo`, `scripts/ci-uinput-check.sh`).
+- **When:** only while the iPad shows the PC's screen (video on); as a plain tablet, fingers stay off. ⚙︎ → "Send finger touches to the PC" switches them off; `[touch] enabled = false` turns the device off on the PC. Both sides advertise the `touch` capability, so old daemons and old apps simply don't use it.
+- **Clean screen:** a finger tap no longer shows the ⚙︎ (it goes to the PC); a finger in the top-right corner, where the ⚙︎ sits, does.
+- **Lifetime:** like the pen (D19), the touchscreen exists only while the iPad is connected.
+- **Undo:** `[touch] enabled = false`, or the iPad toggle.

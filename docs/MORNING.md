@@ -449,6 +449,36 @@ If the readout says `not measurable`, send it anyway: it says whether the layer 
 
    > **Result (your run):** at 240 the stream needed H.264 level 6.0 and Intel's encoder failed every first frame, so the screen blinked in and out. Fixed: the capture now stops at 136 frames/s (the most level 5.2 allows at this size) while the screen itself can run at 240. Try again after `git pull && scripts/install-daemon.sh`: the log should say `native capture: at most 136 frames/s` and `PipeWire format: … max 136/1 fps`.
 
+
+## 18. Fingers on the second screen: pinch, pan, rotate (10 min) → **tell me how it feels**
+
+Your fingers now reach the PC as a touchscreen on the iPad's screen (D25), while the iPad shows it. Palm rejection: fingers are ignored while the pencil hovers or touches, and big contacts (a palm) are ignored.
+
+1. **Update both sides** (the iPad app from the nightly once CI is green):
+
+   ```bash
+   git switch main && git pull && scripts/install-daemon.sh
+   systemctl --user restart sidecard
+   scripts/resign-ipad.sh
+   ```
+
+2. Open the iPad app; the log should say `finger touches: on`:
+
+   ```bash
+   journalctl --user -u sidecard -n 50 | grep -E 'finger touches|virtual device'
+   ```
+
+3. **Krita** on the iPad's screen: two fingers to pan, pinch to zoom, twist to rotate the canvas. A one-finger drag selects or does nothing, depending on Krita's touch settings (Settings → Configure Krita → Canvas Input Settings → Touch gestures).
+4. **A browser:** one-finger scroll, pinch-zoom.
+5. **Palm:** draw with your hand resting on the screen. The canvas must not move. If it does, or a real finger is ignored, tell me (`[touch] palm_radius_pt` tunes it).
+6. Send me:
+
+   ```bash
+   journalctl --user -u sidecard --since '15 min ago' | grep -E 'finger touches|WARN|ERROR' | tail -10
+   ```
+
+   plus a sentence on what worked and what didn't. On a clean screen, the ⚙︎ now comes back with a finger in the **top-right corner** (a finger anywhere else goes to the PC).
+
 ---
 
 ### If something is stuck
