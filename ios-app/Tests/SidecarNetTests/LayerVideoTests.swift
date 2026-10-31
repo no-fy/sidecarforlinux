@@ -7,6 +7,7 @@ import AVFoundation
 import CoreVideo
 import Foundation
 import SidecarProtocol
+import VideoToolbox
 import XCTest
 
 @testable import SidecarNet
@@ -66,6 +67,52 @@ final class LayerVideoTests: XCTestCase {
         XCTAssertEqual(LumaFingerprint.of(otherChroma), fp, "chroma is ignored")
         XCTAssertNotEqual(LumaFingerprint.of(onePixel), fp, "one changed luma pixel changes it")
         XCTAssertNotEqual(LumaFingerprint.of(wider), fp, "the size is part of it")
+    }
+
+    /// Only plain layouts are read with the CPU. The iPad's layer hands out
+    /// "&8v0" (lossless compressed NV12; the crash on 2026-10-31 had it in a
+    /// register), whose bytes per row describe tiles, not rows.
+    func testFingerprintReadsOnlyPlainLayouts() throws {
+        var pb: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 32, 16, kCVPixelFormatType_422YpCbCr8, nil, &pb),
+                       kCVReturnSuccess)
+        XCTAssertNil(LumaFingerprint.of(try XCTUnwrap(pb)), "a layout we don't know is not read")
+        XCTAssertNil(LumaFingerprint.lumaBytesPerPixel(Self.lossless420v))
+    }
+
+    static let lossless420v: OSType = 0x2638_7630  // '&8v0'
+
+    /// The layer's copy goes through PlainPicture: a plain NV12 copy with
+    /// the same luma, in a buffer reused for the next picture.
+    func testPlainPictureCopiesExactly() throws {
+        let a = try nv12(alignment: 128) { x, y in UInt8((x * 3 + y * 5) & 0xFF) }
+        let b = try nv12(alignment: 128) { x, y in UInt8((x * 11 + y) & 0xFF) }
+        let plain = PlainPicture()
+        let fmt = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        XCTAssertEqual(LumaFingerprint.of(try XCTUnwrap(plain.copy(a, as: fmt))), LumaFingerprint.of(a))
+        XCTAssertEqual(LumaFingerprint.of(try XCTUnwrap(plain.copy(b, as: fmt))), LumaFingerprint.of(b))
+        XCTAssertEqual(LumaFingerprint.of(try XCTUnwrap(plain.copy(a, as: fmt))), LumaFingerprint.of(a))
+    }
+
+    /// What the iPad does: the picture arrives as "&8v0". Skipped where this
+    /// Mac can't make compressed buffers.
+    func testCompressedPictureRoundTrip() throws {
+        let a = try nv12(width: 256, height: 128) { x, y in UInt8((x * 3 + y * 5) & 0xFF) }
+        let attrs: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [String: Any]()]
+        var pb: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, 256, 128, Self.lossless420v, attrs as CFDictionary, &pb)
+            == kCVReturnSuccess, let compressed = pb
+        else { throw XCTSkip("no &8v0 buffers on this Mac") }
+        var s: VTPixelTransferSession?
+        XCTAssertEqual(VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &s), noErr)
+        let session = try XCTUnwrap(s)
+        defer { VTPixelTransferSessionInvalidate(session) }
+        guard VTPixelTransferSessionTransferImage(session, from: a, to: compressed) == noErr
+        else { throw XCTSkip("this Mac can't write &8v0") }
+        XCTAssertNil(LumaFingerprint.of(compressed), "never read with the CPU")
+        let back = try XCTUnwrap(PlainPicture().copy(compressed, as: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange))
+        XCTAssertEqual(LumaFingerprint.of(back), LumaFingerprint.of(a), "lossless: the luma comes back unchanged")
+        print("&8v0 round trip: luma unchanged")
     }
 
     /// Our decode and a byte-for-byte copy with other row padding (what the
@@ -189,6 +236,12 @@ final class LayerVideoTests: XCTestCase {
         w.nilPolls = 60
         XCTAssertEqual(w.summary(seconds: 1),
                        "AVSampleBufferDisplayLayer: not measurable, displayedPixelBuffer() gave nothing in 60 refreshes")
+        var u = LayerWindow()
+        u.polls = 60
+        u.nilPolls = 60
+        u.unreadablePolls = 60
+        XCTAssertEqual(u.summary(seconds: 1),
+                       "AVSampleBufferDisplayLayer: not measurable, the layer's picture couldn't be read in 60 refreshes")
         w.nilPolls = 2
         w.changes = 30
         for v in [40, 42, 50] { w.add(receivedToScreenNs: UInt64(v) * ms, match: .exact) }

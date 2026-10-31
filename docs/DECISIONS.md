@@ -314,8 +314,13 @@ Research notes with sources for everything below are in [`docs/research/`](resea
   - frames and dropped frames;
   - **the share displayed "using optimized compositing"**, which Apple describes as "full screen frames rendered in a special power-efficient mode that didn't require compositing with other UI elements". That's the one way this renderer could beat Metal;
   - the average frame delay. The layer's own figure is relative to sample timestamps, which DisplayImmediately ignores, so treat it as informative only.
+- **Reading the copy (fix, 2026-10-31):** on your iPad Air M4 (iPadOS 27) the copy is `&8v0`, Apple's lossless compressed NV12 (it was in a register of the crash report). Its "bytes per row" (75,776 for 2,360 pixels) describe compressed tiles, not rows. Reading it as plain NV12 ran off the end of its memory and crashed the app when this renderer was chosen.
+  - Now the app never reads the copy with the CPU. `VTPixelTransferSession` copies it into a plain NV12 buffer of our own (same size and range), which is fingerprinted. The fingerprint reads only plain layouts it knows, and never past the buffer's size.
+  - **Assumption:** the decompression gives back the luma unchanged (it is lossless). A macOS test does the round trip where the CI Mac supports `&8v0`.
+  - If the copy can't be converted, the readout says "the layer's picture couldn't be read" and names its format.
+  - The renderer choice is no longer saved: every launch starts on Metal.
 - **Not measurable:** if `displayedPixelBuffer()` returns nil (Apple: protected content, nothing shown, "image unavailable", or a non-zero rate), the readout says so, the daemon line stays "not reported", and frames flow as before.
-- **Cost:** a second hardware decode of every frame plus a luma hash per frame and per refresh, only while this renderer is on screen.
+- **Cost:** a second hardware decode of every frame, plus a luma hash per frame, and per refresh a copy of the shown picture and a luma hash, only while this renderer is on screen.
   - **Assumption:** this doesn't measurably slow the layer on an M4.
 - **Looked at, not used:** iOS 27's `AVSampleBufferVideoRenderer.Receiver` reports only decode failures and flush requests, not display times. CI builds with the iOS 26.5 SDK anyway.
 - **Sources** (read 2026-10-31):

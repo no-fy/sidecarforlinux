@@ -408,7 +408,9 @@ The AVSampleBufferDisplayLayer renderer now reports when each frame reached the 
 4. ⚙︎ → Video renderer → **Metal · display link**. Draw the same way for 30 s, for a same-session comparison.
 5. **Send back:** both readout lines, and `grep -E 'video on the iPad' ~/sidecar-r3.log` (say roughly when you switched).
 
-If the readout says `not measurable`, `displayedPixelBuffer()` gave nothing on your iPad; send it anyway.
+If the readout says `not measurable`, send it anyway: it says whether the layer gave no picture or gave one that couldn't be read.
+
+> The first build of this crashed the app as soon as you picked AVSampleBufferDisplayLayer (it read the layer's compressed picture as if it were plain). Fixed: reinstall the nightly with `scripts/resign-ipad.sh`. The renderer choice is no longer saved, so every launch starts on Metal.
 
 ---
 

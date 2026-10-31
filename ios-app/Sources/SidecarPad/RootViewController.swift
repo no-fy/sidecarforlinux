@@ -191,10 +191,11 @@ enum Settings {
     }
     /// Video renderer: Metal (true, the default since it felt better on
     /// your iPad Air M4, DECISIONS D20) or AVSampleBufferDisplayLayer.
-    static var metalVideo: Bool {
-        get { UserDefaults.standard.object(forKey: "metalVideo") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "metalVideo") }
-    }
+    /// Not saved: every launch starts on Metal. The AVSampleBufferDisplayLayer
+    /// renderer is only there for comparison, and when its display timing
+    /// crashed the app (2026-10-31, fixed since) a saved choice would have
+    /// crashed every launch as soon as video started.
+    static var metalVideo = true
     /// How the Metal renderer hands frames to the screen (DECISIONS D21).
     /// The mode restored at launch. Never the experimental UI update link:
     /// a bug in that mode (fixed since) crashed the app as soon as video
@@ -402,7 +403,8 @@ final class RootViewController: UIViewController {
                 self?.controller?.setRenderer(metal: true, present: mode)
             }
         }
-        renderers.append(UIAction(title: "AVSampleBufferDisplayLayer", state: Settings.metalVideo ? .off : .on) {
+        renderers.append(UIAction(title: "AVSampleBufferDisplayLayer (for comparison, not saved)",
+                                  state: Settings.metalVideo ? .off : .on) {
             [weak self] _ in self?.controller?.setRenderer(metal: false, present: nil)
         })
         let renderer = UIMenu(title: "Video renderer",

@@ -17,32 +17,39 @@ import AVFoundation
 import CoreVideo
 import Foundation
 import SidecarProtocol
+import VideoToolbox
 
 /// A hash of a picture's first plane (luma for NV12), row by row without
 /// the row padding, plus its size and format. Two pictures with the same
 /// fingerprint have identical luma (up to hash collisions).
 public enum LumaFingerprint {
+    /// Bytes per pixel of the first plane, for the plain layouts read here:
+    /// `height` rows of `bytesPerRow` bytes. Anything else gives nil. The
+    /// layer's own copy is never read directly (see `PlainPicture`).
+    static func lumaBytesPerPixel(_ format: OSType) -> Int? {
+        switch format {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange: return 1
+        case kCVPixelFormatType_32BGRA, kCVPixelFormatType_32ARGB, kCVPixelFormatType_32RGBA: return 4
+        default: return nil
+        }
+    }
+
     public static func of(_ image: CVPixelBuffer) -> UInt64? {
+        let format = CVPixelBufferGetPixelFormatType(image)
+        guard let bytesPerPixel = lumaBytesPerPixel(format) else { return nil }
         guard CVPixelBufferLockBaseAddress(image, .readOnly) == kCVReturnSuccess else { return nil }
         defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
-        let format = CVPixelBufferGetPixelFormatType(image)
         let planar = CVPixelBufferIsPlanar(image)
         guard let base = planar ? CVPixelBufferGetBaseAddressOfPlane(image, 0) : CVPixelBufferGetBaseAddress(image)
         else { return nil }
         let width = planar ? CVPixelBufferGetWidthOfPlane(image, 0) : CVPixelBufferGetWidth(image)
         let height = planar ? CVPixelBufferGetHeightOfPlane(image, 0) : CVPixelBufferGetHeight(image)
         let stride = planar ? CVPixelBufferGetBytesPerRowOfPlane(image, 0) : CVPixelBufferGetBytesPerRow(image)
-        // 8-bit luma for the 4:2:0 formats, 4 bytes for packed RGB(A); else
-        // the whole row, padding included.
-        let rowBytes: Int
-        switch format {
-        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
-            rowBytes = width
-        case kCVPixelFormatType_32BGRA, kCVPixelFormatType_32ARGB, kCVPixelFormatType_32RGBA:
-            rowBytes = width * 4
-        default:
-            rowBytes = stride
-        }
+        let rowBytes = width * bytesPerPixel
+        guard width > 0, height > 0, stride >= rowBytes else { return nil }
+        // Where CoreVideo knows the buffer's size, never read past it.
+        let size = CVPixelBufferGetDataSize(image)
+        if size > 0 && size < stride * (height - 1) + rowBytes { return nil }
         let p = UnsafeRawPointer(base)
         let k: UInt64 = 0x9E37_79B9_7F4A_7C15
         var h0: UInt64 = 0x243F_6A88_85A3_08D3, h1: UInt64 = 0x1319_8A2E_0370_7344
@@ -134,9 +141,12 @@ public final class DisplayMatcher: @unchecked Sendable {
     /// (nil: it gave none), at `atNs` (session clock). `costNs`: how long
     /// asking the layer took (if it's not well under a refresh, "±1 refresh"
     /// doesn't hold).
-    public func observed(fingerprint: UInt64?, atNs: UInt64, costNs: UInt64 = 0) {
+    /// `unreadable`: the layer gave a picture, but it couldn't be copied
+    /// into a readable one.
+    public func observed(fingerprint: UInt64?, atNs: UInt64, costNs: UInt64 = 0, unreadable: Bool = false) {
         lock.lock()
         window.polls += 1
+        if unreadable { window.unreadablePolls += 1 }
         if costNs > 0 { window.pollCostUs.append(UInt32(min(costNs / 1000, UInt64(UInt32.max)))) }
         var out: Out = []
         if let fp = fingerprint {
@@ -242,6 +252,8 @@ public final class DisplayMatcher: @unchecked Sendable {
 public struct LayerWindow {
     public var polls = 0
     public var nilPolls = 0
+    /// Polls where the layer's picture couldn't be read (counted in nilPolls too).
+    public var unreadablePolls = 0
     public var changes = 0
     public var unmatched = 0
     /// How long each poll of the layer took (displayedPixelBuffer + fingerprint).
@@ -267,7 +279,9 @@ public struct LayerWindow {
         }
         var parts: [String]
         if exactUs.isEmpty && afterPauseUs.isEmpty {
-            if nilPolls == polls {
+            if unreadablePolls == polls {
+                parts = ["AVSampleBufferDisplayLayer: not measurable, the layer's picture couldn't be read in \(polls) refreshes"]
+            } else if nilPolls == polls {
                 parts = ["AVSampleBufferDisplayLayer: not measurable, displayedPixelBuffer() gave nothing in \(polls) refreshes"]
             } else {
                 parts = ["AVSampleBufferDisplayLayer: no frame matched yet (\(changes) screen changes)"]
@@ -288,6 +302,50 @@ public struct LayerWindow {
             parts.append("poll \(ms(pct(pollCostUs, 50)))/\(ms(pollCostUs.max() ?? 0)) ms")
         }
         return (parts + extra).joined(separator: " · ")
+    }
+}
+
+/// Copies the layer's picture into a plain buffer of our own before it is
+/// fingerprinted. The copy iPadOS hands out is not safe to read with the
+/// CPU: on the iPad Air M4 (iPadOS 27, 2026-10-31) it is "&8v0", Apple's
+/// lossless compressed NV12, whose bytes per row describe tiles. Reading it
+/// as plain rows ran off the end of its memory and crashed the app.
+/// VTPixelTransferSession reads any layout VideoToolbox knows; to the same
+/// 4:2:0 format and size it changes no pixel (**assumption** for compressed
+/// sources: lossless; if not, the readout shows "changes unmatched").
+/// Poll thread only.
+final class PlainPicture {
+    private var session: VTPixelTransferSession?
+    private var target: CVPixelBuffer?
+
+    /// `image` as a plain `format` picture of the same size (a buffer
+    /// reused by the next call), or nil if VideoToolbox can't copy it.
+    func copy(_ image: CVPixelBuffer, as format: OSType) -> CVPixelBuffer? {
+        let w = CVPixelBufferGetWidth(image), h = CVPixelBufferGetHeight(image)
+        if session == nil {
+            var s: VTPixelTransferSession?
+            guard VTPixelTransferSessionCreate(allocator: kCFAllocatorDefault, pixelTransferSessionOut: &s) == noErr
+            else { return nil }
+            session = s
+        }
+        if let t = target, CVPixelBufferGetWidth(t) != w || CVPixelBufferGetHeight(t) != h
+            || CVPixelBufferGetPixelFormatType(t) != format {
+            target = nil
+        }
+        if target == nil {
+            let attrs: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [String: Any]()]
+            var pb: CVPixelBuffer?
+            guard CVPixelBufferCreate(kCFAllocatorDefault, w, h, format, attrs as CFDictionary, &pb) == kCVReturnSuccess
+            else { return nil }
+            target = pb
+        }
+        guard let session, let target, VTPixelTransferSessionTransferImage(session, from: image, to: target) == noErr
+        else { return nil }
+        return target
+    }
+
+    deinit {
+        if let session { VTPixelTransferSessionInvalidate(session) }
     }
 }
 
@@ -312,6 +370,9 @@ public final class LayerVideoSink: VideoFrameSink, @unchecked Sendable {
     private var restartDecoder = false
     private var windowStartNs: UInt64 = 0
     private var copyFormat = ""
+    /// Our own decode's format (420v or 420f), the layer's copy is copied into it.
+    private var plainFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    private let plain = PlainPicture()  // poll thread only
     private var lastMetrics: Metrics?
     private var metricsText: String?
 
@@ -359,6 +420,12 @@ public final class LayerVideoSink: VideoFrameSink, @unchecked Sendable {
         self.config = config
         needKeyframe = true
         try? decoder.configure(config)
+        if let format {
+            lock.lock()
+            plainFormat = format.isFullRange
+                ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            lock.unlock()
+        }
     }
 
     public func enqueue(_ frame: VideoFrame, receivedNs: UInt64, report: @escaping (VideoFeedback) -> Void) {
@@ -413,17 +480,29 @@ public final class LayerVideoSink: VideoFrameSink, @unchecked Sendable {
         guard isMeasuring else { return }
         let start = SessionClock.nowNs()
         var fp: UInt64?
+        var unreadable = false
         if #available(macOS 14.4, *) {
             if let pb = renderer.displayedPixelBuffer() {
-                fp = LumaFingerprint.of(pb)
-                let f = Self.fourCC(CVPixelBufferGetPixelFormatType(pb))
-                let desc = "copy \(f) \(CVPixelBufferGetWidth(pb))×\(CVPixelBufferGetHeight(pb))"
+                // Never read the layer's copy itself (see PlainPicture).
+                lock.lock()
+                let target = plainFormat
+                lock.unlock()
+                let source = CVPixelBufferGetPixelFormatType(pb)
+                var desc = "copy \(Self.fourCC(source)) \(CVPixelBufferGetWidth(pb))×\(CVPixelBufferGetHeight(pb))"
+                if let mine = plain.copy(pb, as: target) {
+                    fp = LumaFingerprint.of(mine)
+                    if source != target { desc += " → \(Self.fourCC(target))" }
+                }
+                if fp == nil {
+                    unreadable = true
+                    desc += ", unreadable"
+                }
                 lock.lock()
                 copyFormat = desc
                 lock.unlock()
             }
         }
-        matcher.observed(fingerprint: fp, atNs: atNs, costNs: max(1, SessionClock.nowNs() - start))
+        matcher.observed(fingerprint: fp, atNs: atNs, costNs: max(1, SessionClock.nowNs() - start), unreadable: unreadable)
         publishIfDue(nowNs: atNs)
     }
 
