@@ -42,6 +42,15 @@ squeeze_mode = "click"
 # Buzz the Pencil Pro when the tool changes (pen <-> eraser).
 haptic_on_tool_switch = true
 
+[touch]
+# Fingers on the iPad become a touchscreen on the PC (pinch-zoom, two-finger
+# pan and rotate in apps that support touch, e.g. Krita). Needs the iPad app's
+# "Send finger touches" (on by default).
+enabled = true
+# Touches larger than this radius (points, UITouch.majorRadius) are palms and
+# ignored. 0 = off. Fingers are also ignored while the pencil is near.
+palm_radius_pt = 45.0
+
 [kde]
 # Map the pen to this output via KWin's D-Bus API (e.g. "DP-1",
 # "Virtual-ipad"). Empty = leave KDE's own tablet settings alone.
@@ -100,8 +109,25 @@ pub struct Config {
     pub connection: ConnectionCfg,
     pub tablet: TabletCfg,
     pub pencil: PencilCfg,
+    pub touch: TouchCfg,
     pub kde: KdeCfg,
     pub video: VideoCfg,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TouchCfg {
+    pub enabled: bool,
+    pub palm_radius_pt: f32,
+}
+
+impl Default for TouchCfg {
+    fn default() -> Self {
+        TouchCfg {
+            enabled: true,
+            palm_radius_pt: crate::touch::TouchConfig::default().palm_radius_pt,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -267,6 +293,9 @@ impl Config {
         }
         if !(0.0..0.5).contains(&self.tablet.min_contact_pressure) {
             bail!("tablet.min_contact_pressure must be in [0, 0.5)");
+        }
+        if !(0.0..=500.0).contains(&self.touch.palm_radius_pt) {
+            bail!("touch.palm_radius_pt must be 0 (off) or a radius in points, e.g. 45");
         }
         if self.tablet.max_rate_hz != 0 && !(20..=240).contains(&self.tablet.max_rate_hz) {
             bail!("tablet.max_rate_hz must be 0 (no cap) or between 20 and 240");

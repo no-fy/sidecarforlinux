@@ -145,7 +145,9 @@ async fn usb_path_via_fake_usbmuxd_pairs_and_streams() {
         device_opts: DeviceOptions {
             direct: true,
             keyboard_keys: vec![],
+            touch: false,
         },
+        touch_cfg: Default::default(),
         haptic_on_tool_switch: true,
         sink_factory: Box::new(move |_, _| Ok(Box::new(s2.clone()) as Box<dyn EventSink>)),
         max_duration: Some(Duration::from_secs(15)),

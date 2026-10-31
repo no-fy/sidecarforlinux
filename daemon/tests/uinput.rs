@@ -33,6 +33,7 @@ fn uinput_tablet_capabilities_and_events_roundtrip() {
         &DeviceOptions {
             direct: true,
             keyboard_keys: vec![],
+            touch: false,
         },
     )
     .unwrap();

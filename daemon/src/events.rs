@@ -15,6 +15,11 @@ pub const ABS_PRESSURE: u16 = 0x18;
 pub const ABS_DISTANCE: u16 = 0x19;
 pub const ABS_TILT_X: u16 = 0x1a;
 pub const ABS_TILT_Y: u16 = 0x1b;
+pub const ABS_MT_SLOT: u16 = 0x2f;
+pub const ABS_MT_POSITION_X: u16 = 0x35;
+pub const ABS_MT_POSITION_Y: u16 = 0x36;
+pub const ABS_MT_TOOL_TYPE: u16 = 0x37;
+pub const ABS_MT_TRACKING_ID: u16 = 0x39;
 
 pub const BTN_TOOL_PEN: u16 = 0x140;
 pub const BTN_TOOL_RUBBER: u16 = 0x141;
@@ -55,6 +60,8 @@ impl RawEvent {
 pub enum DeviceKind {
     Pen,
     Keys,
+    /// The finger touchscreen (when the iPad sends touches).
+    Touch,
 }
 
 /// Human-readable names (mirrors evtest output) for logs and tests.
@@ -67,6 +74,11 @@ pub fn code_name(ty: u16, code: u16) -> String {
         (EV_ABS, ABS_DISTANCE) => "ABS_DISTANCE",
         (EV_ABS, ABS_TILT_X) => "ABS_TILT_X",
         (EV_ABS, ABS_TILT_Y) => "ABS_TILT_Y",
+        (EV_ABS, ABS_MT_SLOT) => "ABS_MT_SLOT",
+        (EV_ABS, ABS_MT_POSITION_X) => "ABS_MT_POSITION_X",
+        (EV_ABS, ABS_MT_POSITION_Y) => "ABS_MT_POSITION_Y",
+        (EV_ABS, ABS_MT_TOOL_TYPE) => "ABS_MT_TOOL_TYPE",
+        (EV_ABS, ABS_MT_TRACKING_ID) => "ABS_MT_TRACKING_ID",
         (EV_KEY, BTN_TOOL_PEN) => "BTN_TOOL_PEN",
         (EV_KEY, BTN_TOOL_RUBBER) => "BTN_TOOL_RUBBER",
         (EV_KEY, BTN_TOUCH) => "BTN_TOUCH",

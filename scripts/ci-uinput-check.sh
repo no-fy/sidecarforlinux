@@ -72,4 +72,44 @@ check "$OUT/libinput-debug-events.txt" 'rotation: [0-9]+\.[0-9]+' "libinput: rot
 check "$OUT/libinput-debug-events.txt" 'distance: 0\.[0-9]*[1-9]' "libinput: distance (hover)"
 check "$OUT/libinput-debug-events.txt" 'TABLET_TOOL_BUTTON.*(BTN_STYLUS2|332)' "libinput: stylus button 2"
 check "$OUT/libinput-debug-events.txt" 'type eraser|eraser' "libinput: eraser tool"
+
+# --- The finger touchscreen: a two-finger pinch, then a touch cancelled as
+# a palm (the pencil came near). libinput must see a touchscreen, and the
+# palm must arrive as a cancel, not a lift.
+"$BIN" touch-demo --settle 3 > "$OUT/touch-demo.log" 2>&1 &
+TDEMO=$!
+TNODE=""
+for _ in $(seq 1 50); do
+  TNODE=$(grep -o '/dev/input/event[0-9]*' "$OUT/touch-demo.log" | head -1 || true)
+  [ -n "$TNODE" ] && break
+  sleep 0.1
+done
+if [ -z "$TNODE" ]; then
+  echo "no event node reported by sidecard touch-demo" >&2
+  cat "$OUT/touch-demo.log" >&2
+  exit 1
+fi
+echo "touch node: $TNODE"
+udevadm settle || true
+udevadm info --query=property --name="$TNODE" > "$OUT/touch-udev.txt" || true
+timeout 10 evtest "$TNODE" > "$OUT/touch-evtest.txt" 2>&1 &
+TEVTEST=$!
+timeout 10 libinput debug-events --device "$TNODE" > "$OUT/touch-libinput-debug-events.txt" 2>&1 &
+TLIBINPUT=$!
+sleep 0.5
+libinput list-devices > "$OUT/touch-libinput-list-devices.txt" 2>&1 || true
+grep -A14 'Device:.*Sidecar iPad Touch' "$OUT/touch-libinput-list-devices.txt" > "$OUT/touch-libinput-device.txt" || true
+wait "$TDEMO"
+sleep 0.5
+kill "$TEVTEST" "$TLIBINPUT" 2>/dev/null || true
+wait "$TEVTEST" "$TLIBINPUT" 2>/dev/null || true
+echo "--- touch checks"
+check "$OUT/touch-udev.txt" '^ID_INPUT_TOUCHSCREEN=1' "udev classifies the touch device as a touchscreen"
+check "$OUT/touch-evtest.txt" 'Input device name: "Sidecar iPad Touch"' "evtest sees the touch device"
+check "$OUT/touch-evtest.txt" 'code 53 \(ABS_MT_POSITION_X\), value [1-9]' "evtest: finger positions"
+check "$OUT/touch-libinput-device.txt" 'Capabilities:.*touch' "libinput: touch capability"
+check "$OUT/touch-libinput-debug-events.txt" 'TOUCH_DOWN' "libinput: touch down"
+check "$OUT/touch-libinput-debug-events.txt" 'TOUCH_MOTION' "libinput: touch motion"
+check "$OUT/touch-libinput-debug-events.txt" 'TOUCH_UP' "libinput: touch up"
+check "$OUT/touch-libinput-debug-events.txt" 'TOUCH_CANCEL' "libinput: palm -> touch cancel"
 exit $fail

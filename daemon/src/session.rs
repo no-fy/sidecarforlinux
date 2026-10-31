@@ -9,6 +9,7 @@ use crate::identity::{Identity, TrustStore};
 use crate::recording::Recorder;
 use crate::sink::{DeviceOptions, EventSink};
 use crate::tablet::{MapperConfig, PenMapper, RateLimiter, TabletGeometry, Tool};
+use crate::touch::{TouchConfig, TouchMapper, TouchStats};
 use anyhow::{anyhow, bail, Context, Result};
 use sidecar_protocol::pairing::{self, Fingerprint};
 use sidecar_protocol::*;
@@ -37,7 +38,9 @@ pub struct SessionCtx {
     pub name: String,
     pub mapper_cfg: MapperConfig,
     pub gesture_cfg: GestureConfig,
+    /// `touch`: create the touchscreen if the iPad sends touches.
     pub device_opts: DeviceOptions,
+    pub touch_cfg: TouchConfig,
     pub haptic_on_tool_switch: bool,
     pub sink_factory: SinkFactory,
     /// End the session after this long (latency tool, tests).
@@ -72,6 +75,8 @@ pub struct SessionStats {
     pub samples: u64,
     pub batches: u64,
     pub gestures: u64,
+    /// Finger touches received (TouchBatch samples).
+    pub touches: u64,
     pub rtt_ns: Option<i64>,
     pub clock_offset_ns: Option<i64>,
     pub peer_name: String,
@@ -87,6 +92,7 @@ impl Default for SessionStats {
             samples: 0,
             batches: 0,
             gestures: 0,
+            touches: 0,
             rtt_ns: None,
             clock_offset_ns: None,
             peer_name: String::new(),
@@ -252,7 +258,13 @@ where
         minor: PROTOCOL_MINOR,
         channel: Channel::Input,
         trusts_peer: we_trust,
-        caps: caps::GESTURES | caps::HAPTICS,
+        caps: caps::GESTURES
+            | caps::HAPTICS
+            | if ctx.device_opts.touch {
+                caps::TOUCH
+            } else {
+                0
+            },
         session_id,
         name: ctx.name.clone(),
     }))
@@ -295,7 +307,10 @@ where
     }
 
     let geo = TabletGeometry::from_surface(&ack.surface);
-    let mut sink = (ctx.sink_factory)(geo, &ctx.device_opts)?;
+    // The touchscreen only if both sides want it.
+    let mut opts = ctx.device_opts.clone();
+    opts.touch = opts.touch && ack.caps & caps::TOUCH != 0;
+    let mut sink = (ctx.sink_factory)(geo, &opts)?;
     ctx.stats.dev_nodes = sink.dev_nodes();
     for n in &ctx.stats.dev_nodes {
         tracing::info!("virtual device node {}", n.display());
@@ -318,9 +333,20 @@ where
         }));
     }
 
+    if opts.touch {
+        tracing::info!(
+            "finger touches: on (palms over {} pt and fingers while the pencil is near are ignored)",
+            ctx.touch_cfg.palm_radius_pt
+        );
+    }
+    let touch = opts
+        .touch
+        .then(|| TouchMapper::new(geo, ctx.touch_cfg.clone()));
     let mut live = Live {
         sink,
         mapper,
+        touch,
+        opts,
         rate: RateLimiter::new(ctx.mapper_cfg.max_rate_hz),
         geo,
         clock: ClockSync::default(),
@@ -333,6 +359,11 @@ where
         .emit_all(DeviceKind::Pen, &live.mapper.release_all())
     {
         tracing::warn!("releasing pen state failed: {e}");
+    }
+    if let Some(t) = live.touch.as_mut() {
+        if let Err(e) = live.sink.emit_all(DeviceKind::Touch, &t.release_all()) {
+            tracing::warn!("releasing touches failed: {e}");
+        }
     }
     if matches!(res, Ok(SessionEnd::TimeUp | SessionEnd::SampleLimit)) {
         let _ = wr
@@ -349,6 +380,9 @@ where
 struct Live {
     sink: Box<dyn EventSink>,
     mapper: PenMapper,
+    touch: Option<TouchMapper>,
+    /// The device options this session uses (touch decided at hello).
+    opts: DeviceOptions,
     rate: RateLimiter,
     geo: TabletGeometry,
     clock: ClockSync,
@@ -372,6 +406,7 @@ where
     let started = Instant::now();
     let mut last_rx = Instant::now();
     let mut last_log = Instant::now();
+    let mut logged_touch = TouchStats::default();
 
     loop {
         tokio::select! {
@@ -408,6 +443,11 @@ where
                             if let Some(rec) = ctx.recorder.as_mut() {
                                 rec.pen(s)?;
                             }
+                        }
+                        // Pencil near: fingers stop (palm rejection).
+                        if let Some(t) = live.touch.as_mut() {
+                            let frames = t.set_pen_near(live.mapper.in_proximity());
+                            live.sink.emit_all(DeviceKind::Touch, &frames)?;
                         }
                         if ctx.max_samples.is_some_and(|m| ctx.stats.samples >= m) {
                             return Ok(SessionEnd::SampleLimit);
@@ -449,15 +489,28 @@ where
                             rec.gesture(&g)?;
                         }
                     }
+                    Message::TouchBatch(b) => {
+                        ctx.stats.touches += b.touches.len() as u64;
+                        if let Some(t) = live.touch.as_mut() {
+                            let frames = t.batch(&b.touches);
+                            live.sink.emit_all(DeviceKind::Touch, &frames)?;
+                        }
+                    }
                     Message::SurfaceInfo(s) => {
                         let ng = TabletGeometry::from_surface(&s);
                         if ng != live.geo {
                             tracing::info!("surface changed to {}x{} pt, recreating tablet device", s.width_pt, s.height_pt);
                             live.sink.emit_all(DeviceKind::Pen, &live.mapper.release_all())?;
+                            if let Some(t) = live.touch.as_mut() {
+                                live.sink.emit_all(DeviceKind::Touch, &t.release_all())?;
+                            }
                             live.geo = ng;
-                            live.sink = (ctx.sink_factory)(ng, &ctx.device_opts)?;
+                            live.sink = (ctx.sink_factory)(ng, &live.opts)?;
                             ctx.stats.dev_nodes = live.sink.dev_nodes();
                             live.mapper = PenMapper::new(ng, ctx.mapper_cfg.clone());
+                            if live.touch.is_some() {
+                                live.touch = Some(TouchMapper::new(ng, ctx.touch_cfg.clone()));
+                            }
                         }
                         if let Some(rec) = ctx.recorder.as_mut() {
                             rec.surface(&s)?;
@@ -493,6 +546,17 @@ where
                             rep.p50_us as f64 / 1000.0, rep.p95_us as f64 / 1000.0, rep.p99_us as f64 / 1000.0,
                             rep.rtt_us as f64 / 1000.0, ctx.stats.samples
                         );
+                    }
+                }
+                if ticks % 100 == 0 {
+                    if let Some(t) = &live.touch {
+                        if t.stats != logged_touch {
+                            logged_touch = t.stats;
+                            tracing::info!(
+                                "finger touches so far: {} fingers, {} palms ignored, {} ignored while the pencil was near, {} cancelled",
+                                t.stats.fingers, t.stats.palms, t.stats.pen_near, t.stats.cancelled
+                            );
+                        }
                     }
                 }
                 if last_rx.elapsed() > LIVENESS_TIMEOUT {

@@ -61,6 +61,12 @@ final class VectorTests: XCTestCase {
             "goodbye": .goodbye(code: .notPaired, reason: "pair first"),
             "pen_batch": .penBatch(PenBatch(sendTimeNs: 1_234_567_999_999,
                                             samples: [sample(1, .down), sample(2, .move)])),
+            "touch_batch": .touchBatch(TouchBatch(sendTimeNs: 1_234_568_000_000, touches: [
+                TouchSample(timestampNs: 1_234_567_890_123, id: 1, phase: .down, flags: 0, x: 0.25, y: 0.5,
+                            majorRadiusPt: 20.5),
+                TouchSample(timestampNs: 1_234_567_890_123, id: 2, phase: .move, flags: SampleFlags.coalesced,
+                            x: 0.75, y: 0.125, majorRadiusPt: 62.25),
+            ])),
             "pencil_gesture_squeeze": .pencilGesture(PencilGesture(
                 timestampNs: 99, kind: .squeeze, phase: .ended, preferredAction: 5,
                 hoverPose: HoverPose(x: 0.5, y: 0.5, zOffset: 0.25, altitude: 1, azimuth: 2, roll: 3))),

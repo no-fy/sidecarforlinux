@@ -137,6 +137,14 @@ enum Cmd {
     },
     /// Write the synthetic demo recording (every pencil signal) to stdout.
     GenDemo,
+    /// Create the finger touchscreen alone and play a two-finger pinch, then
+    /// a touch cancelled as a palm (checks with libinput; used in CI).
+    #[command(hide = true)]
+    TouchDemo {
+        /// Seconds to wait after creating the device (attach readers).
+        #[arg(long, default_value_t = 2.0)]
+        settle: f64,
+    },
     /// Show identity fingerprint, config and paired iPads.
     Info,
     /// Forget a paired iPad (by name or fingerprint prefix).
@@ -265,6 +273,75 @@ fn sink_factory(dry_run: bool, kde_output: String) -> SinkFactory {
     )
 }
 
+#[cfg(target_os = "linux")]
+fn touch_demo(settle: f64) -> Result<()> {
+    use sidecar_protocol::{SurfaceInfo, TouchPhase, TouchSample};
+    use sidecard::touch::{TouchConfig, TouchMapper};
+    let geo = TabletGeometry::from_surface(&SurfaceInfo {
+        width_pt: 1180.0,
+        height_pt: 820.0,
+        scale: 2.0,
+        points_per_inch: 132.0,
+    });
+    let mut sink = UinputSink::create_touch_only(geo)?;
+    for n in sink.dev_nodes() {
+        println!("touch device: {}", n.display());
+    }
+    std::thread::sleep(Duration::from_secs_f64(settle));
+    let mut m = TouchMapper::new(geo, TouchConfig::default());
+    let mut play = |m: &mut TouchMapper, touches: &[TouchSample]| -> Result<()> {
+        sink.emit_all(DeviceKind::Touch, &m.batch(touches))?;
+        std::thread::sleep(Duration::from_millis(16));
+        Ok(())
+    };
+    let t = |ts: u64, id: u16, phase: TouchPhase, x: f32, y: f32| TouchSample {
+        timestamp_ns: ts,
+        id,
+        phase,
+        flags: 0,
+        x,
+        y,
+        major_radius_pt: 20.0,
+    };
+    // Two fingers spread apart: a pinch-out.
+    play(
+        &mut m,
+        &[
+            t(0, 1, TouchPhase::Down, 0.45, 0.5),
+            t(0, 2, TouchPhase::Down, 0.55, 0.5),
+        ],
+    )?;
+    for i in 1..=20u64 {
+        let d = 0.05 + i as f32 * 0.01;
+        play(
+            &mut m,
+            &[
+                t(i, 1, TouchPhase::Move, 0.5 - d, 0.5),
+                t(i, 2, TouchPhase::Move, 0.5 + d, 0.5),
+            ],
+        )?;
+    }
+    play(
+        &mut m,
+        &[
+            t(30, 1, TouchPhase::Up, 0.25, 0.5),
+            t(30, 2, TouchPhase::Up, 0.75, 0.5),
+        ],
+    )?;
+    // A finger, then the pencil comes near: cancelled as a palm.
+    play(&mut m, &[t(40, 3, TouchPhase::Down, 0.3, 0.3)])?;
+    play(&mut m, &[t(41, 3, TouchPhase::Move, 0.32, 0.3)])?;
+    sink.emit_all(DeviceKind::Touch, &m.set_pen_near(true))?;
+    std::thread::sleep(Duration::from_millis(500));
+    println!("touch demo done: {:?}", m.stats);
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn touch_demo(_settle: f64) -> Result<()> {
+    bail!("uinput is Linux-only")
+}
+
 /// One daemon session per user: the iPad lets the newest connection win, so
 /// two `sidecard` processes would keep kicking each other off.
 fn single_instance_lock() -> Result<std::fs::File> {
@@ -323,6 +400,10 @@ fn session_ctx(env: &Env, pairing: PairingMode, dry_run: bool) -> Result<Session
         device_opts: DeviceOptions {
             direct: env.cfg.tablet.direct,
             keyboard_keys: env.cfg.keyboard_keys(),
+            touch: env.cfg.touch.enabled,
+        },
+        touch_cfg: sidecard::touch::TouchConfig {
+            palm_radius_pt: env.cfg.touch.palm_radius_pt,
         },
         haptic_on_tool_switch: env.cfg.pencil.haptic_on_tool_switch,
         sink_factory: sink_factory(dry_run, env.cfg.kde.output.clone()),
@@ -873,6 +954,7 @@ async fn replay(
     let opts = DeviceOptions {
         direct: env.cfg.tablet.direct,
         keyboard_keys: env.cfg.keyboard_keys(),
+        touch: false,
     };
     let mut sink = (sink_factory(dry_run, env.cfg.kde.output.clone()))(geo, &opts)?;
     for n in sink.dev_nodes() {
@@ -1162,6 +1244,7 @@ fn main() -> Result<()> {
                 recording::write_all(&recording::demo(), &mut std::io::stdout().lock())?;
                 Ok(())
             }
+            Cmd::TouchDemo { settle } => touch_demo(*settle),
             Cmd::Info => info(&Env::load(&cli)?),
             Cmd::Unpair { who } => {
                 let env = Env::load(&cli)?;

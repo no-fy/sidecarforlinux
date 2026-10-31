@@ -36,7 +36,9 @@ fn ctx(id: Identity, trust: TrustStore, pairing: PairingMode, sink: Shared) -> S
         device_opts: DeviceOptions {
             direct: true,
             keyboard_keys: vec![],
+            touch: false,
         },
+        touch_cfg: Default::default(),
         haptic_on_tool_switch: true,
         sink_factory: Box::new(move |_, _| Ok(Box::new(sink.clone()) as Box<dyn EventSink>)),
         max_duration: Some(Duration::from_secs(20)),

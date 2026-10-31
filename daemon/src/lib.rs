@@ -20,6 +20,7 @@ pub mod session;
 pub mod sink;
 pub mod tablet;
 pub mod tls;
+pub mod touch;
 pub mod transport;
 pub mod usbmux;
 pub mod video;

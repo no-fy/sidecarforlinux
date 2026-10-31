@@ -22,6 +22,7 @@ public enum MessageType {
     public static let penBatch: UInt8 = 0x10
     public static let pencilGesture: UInt8 = 0x11
     public static let surfaceInfo: UInt8 = 0x12
+    public static let touchBatch: UInt8 = 0x13
     public static let haptic: UInt8 = 0x20
     public static let mappingInfo: UInt8 = 0x21
     public static let ping: UInt8 = 0x30
@@ -40,6 +41,8 @@ public enum Caps {
     public static let roll: UInt32 = 1 << 4
     public static let hover: UInt32 = 1 << 5
     public static let hevc: UInt32 = 1 << 6
+    /// iPad sends finger touches (TouchBatch).
+    public static let touch: UInt32 = 1 << 7
 }
 
 public enum Channel: UInt8, Sendable {
@@ -187,6 +190,70 @@ public struct PenBatch: Equatable, Sendable {
     public init(sendTimeNs: UInt64, samples: [PenSample]) {
         self.sendTimeNs = sendTimeNs
         self.samples = samples
+    }
+}
+
+public enum TouchPhase: UInt8, Sendable {
+    /// cancel: iPadOS took the touch away (a system gesture), not a lift.
+    case down = 1, move = 2, up = 3, cancel = 4
+}
+
+/// One finger on the screen (the pencil goes in PenSample).
+public struct TouchSample: Equatable, Sendable {
+    public static let wireLength = 24
+    /// Session clock in ns, as PenSample.
+    public var timestampNs: UInt64
+    /// Stable from down to up/cancel; may be reused afterwards.
+    public var id: UInt16
+    public var phase: TouchPhase
+    /// SampleFlags.coalesced only, so far.
+    public var flags: UInt8
+    public var x: Float
+    public var y: Float
+    /// UITouch.majorRadius in points (a palm is much larger than a finger).
+    public var majorRadiusPt: Float
+
+    public init(timestampNs: UInt64, id: UInt16, phase: TouchPhase, flags: UInt8, x: Float, y: Float,
+                majorRadiusPt: Float) {
+        self.timestampNs = timestampNs
+        self.id = id
+        self.phase = phase
+        self.flags = flags
+        self.x = x
+        self.y = y
+        self.majorRadiusPt = majorRadiusPt
+    }
+
+    func write(_ w: inout ByteWriter) {
+        w.u64(timestampNs)
+        w.u16(id)
+        w.u8(phase.rawValue)
+        w.u8(flags)
+        w.f32(x)
+        w.f32(y)
+        w.f32(majorRadiusPt)
+    }
+
+    static func read(_ r: inout ByteReader) throws -> TouchSample {
+        let ts = try r.u64()
+        let id = try r.u16()
+        let rawPhase = try r.u8()
+        guard let phase = TouchPhase(rawValue: rawPhase) else {
+            throw ProtocolError.badValue(field: "touch phase", value: UInt32(rawPhase))
+        }
+        let flags = try r.u8()
+        return TouchSample(timestampNs: ts, id: id, phase: phase, flags: flags, x: try r.f32(), y: try r.f32(),
+                           majorRadiusPt: try r.f32())
+    }
+}
+
+public struct TouchBatch: Equatable, Sendable {
+    public var sendTimeNs: UInt64
+    public var touches: [TouchSample]
+
+    public init(sendTimeNs: UInt64, touches: [TouchSample]) {
+        self.sendTimeNs = sendTimeNs
+        self.touches = touches
     }
 }
 
@@ -357,6 +424,7 @@ public enum Message: Equatable, Sendable {
     case penBatch(PenBatch)
     case pencilGesture(PencilGesture)
     case surfaceInfo(SurfaceInfo)
+    case touchBatch(TouchBatch)
     case haptic(Haptic)
     case mappingInfo(MappingInfo)
     case ping(Ping)
@@ -379,6 +447,7 @@ public enum Message: Equatable, Sendable {
         case .penBatch: return MessageType.penBatch
         case .pencilGesture: return MessageType.pencilGesture
         case .surfaceInfo: return MessageType.surfaceInfo
+        case .touchBatch: return MessageType.touchBatch
         case .haptic: return MessageType.haptic
         case .mappingInfo: return MessageType.mappingInfo
         case .ping: return MessageType.ping
@@ -452,6 +521,11 @@ public enum Message: Equatable, Sendable {
             w.f32(p.roll)
         case .surfaceInfo(let s):
             Message.writeSurface(&w, s)
+        case .touchBatch(let b):
+            w.u64(b.sendTimeNs)
+            w.u16(UInt16(b.touches.count))
+            w.u16(UInt16(TouchSample.wireLength))
+            for t in b.touches { t.write(&w) }
         case .haptic(let h):
             w.u8(h.kind.rawValue)
             w.u8(0)
@@ -575,6 +649,21 @@ public enum Message: Equatable, Sendable {
                                                 preferredAction: preferred, hoverPose: hasPose ? pose : nil))
         case MessageType.surfaceInfo:
             return .surfaceInfo(try readSurface(&r))
+        case MessageType.touchBatch:
+            let send = try r.u64()
+            let count = Int(try r.u16())
+            let touchLen = Int(try r.u16())
+            guard touchLen >= TouchSample.wireLength else {
+                throw ProtocolError.badValue(field: "touch_len", value: UInt32(touchLen))
+            }
+            var touches: [TouchSample] = []
+            touches.reserveCapacity(count)
+            for _ in 0..<count {
+                let raw = try r.array(touchLen)
+                var tr = ByteReader(type: type, data: Array(raw[0..<TouchSample.wireLength]))
+                touches.append(try TouchSample.read(&tr))
+            }
+            return .touchBatch(TouchBatch(sendTimeNs: send, touches: touches))
         case MessageType.haptic:
             let rawKind = try r.u8()
             guard let kind = HapticKind(rawValue: rawKind) else {

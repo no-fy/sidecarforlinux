@@ -79,6 +79,32 @@ fn messages() -> Vec<(&'static str, Message)> {
             }),
         ),
         (
+            "touch_batch",
+            Message::TouchBatch(TouchBatch {
+                send_time_ns: 1_234_568_000_000,
+                touches: vec![
+                    TouchSample {
+                        timestamp_ns: 1_234_567_890_123,
+                        id: 1,
+                        phase: TouchPhase::Down,
+                        flags: 0,
+                        x: 0.25,
+                        y: 0.5,
+                        major_radius_pt: 20.5,
+                    },
+                    TouchSample {
+                        timestamp_ns: 1_234_567_890_123,
+                        id: 2,
+                        phase: TouchPhase::Move,
+                        flags: sample_flags::COALESCED,
+                        x: 0.75,
+                        y: 0.125,
+                        major_radius_pt: 62.25,
+                    },
+                ],
+            }),
+        ),
+        (
             "pencil_gesture_squeeze",
             Message::PencilGesture(PencilGesture {
                 timestamp_ns: 99,

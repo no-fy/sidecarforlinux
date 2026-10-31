@@ -46,6 +46,7 @@ impl EventSink for RecordingSink {
 
 pub const PEN_DEVICE_NAME: &str = "Sidecar Apple Pencil";
 pub const KEYS_DEVICE_NAME: &str = "Sidecar Apple Pencil Keys";
+pub const TOUCH_DEVICE_NAME: &str = "Sidecar iPad Touch";
 /// pid.codes test VID/PID (1209:0001), BUS_VIRTUAL. See docs/DECISIONS.md.
 pub const VENDOR_ID: u16 = 0x1209;
 pub const PRODUCT_ID: u16 = 0x0001;
@@ -57,12 +58,17 @@ pub struct DeviceOptions {
     pub direct: bool,
     /// Extra keys for the companion keyboard device.
     pub keyboard_keys: Vec<u16>,
+    /// Also create the finger touchscreen (the iPad sends touches and
+    /// `[touch] enabled`).
+    pub touch: bool,
 }
 
 #[cfg(target_os = "linux")]
 pub struct UinputSink {
-    pen: evdev::uinput::VirtualDevice,
+    /// None only in `create_touch_only`.
+    pen: Option<evdev::uinput::VirtualDevice>,
     keys: Option<evdev::uinput::VirtualDevice>,
+    touch: Option<evdev::uinput::VirtualDevice>,
 }
 
 #[cfg(target_os = "linux")]
@@ -141,10 +147,55 @@ impl UinputSink {
                     .context("creating uinput keyboard device")?,
             )
         };
+        let touch = if opts.touch {
+            Some(Self::create_touch(geo)?)
+        } else {
+            None
+        };
         Ok(UinputSink {
-            pen,
+            pen: Some(pen),
             keys: keys_dev,
+            touch,
         })
+    }
+
+    /// Only the touchscreen, without the pen (`sidecard touch-demo`).
+    pub fn create_touch_only(geo: TabletGeometry) -> Result<Self> {
+        Ok(UinputSink {
+            pen: None,
+            keys: None,
+            touch: Some(Self::create_touch(geo)?),
+        })
+    }
+
+    /// A direct multitouch screen (MT protocol B) the size of the iPad's
+    /// surface, like the touch layer of a Cintiq Pro.
+    fn create_touch(geo: TabletGeometry) -> Result<evdev::uinput::VirtualDevice> {
+        use crate::touch::{MAX_SLOTS, MT_TOOL_PALM};
+        use evdev::{AttributeSet, BusType, InputId, KeyCode, PropType};
+        let mut keys = AttributeSet::<KeyCode>::new();
+        keys.insert(KeyCode(BTN_TOUCH));
+        let mut props = AttributeSet::<PropType>::new();
+        props.insert(PropType::DIRECT);
+        evdev::uinput::VirtualDevice::builder()?
+            .name(TOUCH_DEVICE_NAME)
+            .input_id(InputId::new(
+                BusType::BUS_VIRTUAL,
+                VENDOR_ID,
+                PRODUCT_ID + 2,
+                1,
+            ))
+            .with_properties(&props)?
+            .with_keys(&keys)?
+            .with_absolute_axis(&abs(ABS_X, 0, geo.x_max, geo.resolution))?
+            .with_absolute_axis(&abs(ABS_Y, 0, geo.y_max, geo.resolution))?
+            .with_absolute_axis(&abs(ABS_MT_SLOT, 0, MAX_SLOTS as i32 - 1, 0))?
+            .with_absolute_axis(&abs(ABS_MT_TRACKING_ID, 0, 0xFFFF, 0))?
+            .with_absolute_axis(&abs(ABS_MT_TOOL_TYPE, 0, MT_TOOL_PALM, 0))?
+            .with_absolute_axis(&abs(ABS_MT_POSITION_X, 0, geo.x_max, geo.resolution))?
+            .with_absolute_axis(&abs(ABS_MT_POSITION_Y, 0, geo.y_max, geo.resolution))?
+            .build()
+            .context("creating uinput touchscreen device")
     }
 }
 
@@ -152,9 +203,16 @@ impl UinputSink {
 impl EventSink for UinputSink {
     fn emit(&mut self, dev: DeviceKind, frame: &[RawEvent]) -> io::Result<()> {
         let d = match dev {
-            DeviceKind::Pen => &mut self.pen,
+            DeviceKind::Pen => match self.pen.as_mut() {
+                Some(p) => p,
+                None => return Ok(()),
+            },
             DeviceKind::Keys => match self.keys.as_mut() {
                 Some(k) => k,
+                None => return Ok(()),
+            },
+            DeviceKind::Touch => match self.touch.as_mut() {
+                Some(t) => t,
                 None => return Ok(()),
             },
         };
@@ -167,7 +225,13 @@ impl EventSink for UinputSink {
 
     fn dev_nodes(&mut self) -> Vec<PathBuf> {
         let mut out = Vec::new();
-        for d in std::iter::once(&mut self.pen).chain(self.keys.as_mut()) {
+        for d in self
+            .pen
+            .as_mut()
+            .into_iter()
+            .chain(self.keys.as_mut())
+            .chain(self.touch.as_mut())
+        {
             if let Ok(nodes) = d.enumerate_dev_nodes_blocking() {
                 out.extend(nodes.filter_map(|n| n.ok()));
             }

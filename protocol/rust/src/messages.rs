@@ -17,6 +17,7 @@ pub mod ty {
     pub const PEN_BATCH: u8 = 0x10;
     pub const PENCIL_GESTURE: u8 = 0x11;
     pub const SURFACE_INFO: u8 = 0x12;
+    pub const TOUCH_BATCH: u8 = 0x13;
 
     pub const HAPTIC: u8 = 0x20;
     pub const MAPPING_INFO: u8 = 0x21;
@@ -70,6 +71,8 @@ pub mod caps {
     pub const HOVER: u32 = 1 << 5;
     /// Video: HEVC decode supported.
     pub const HEVC: u32 = 1 << 6;
+    /// iPad: sends finger touches (TouchBatch).
+    pub const TOUCH: u32 = 1 << 7;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -258,6 +261,83 @@ pub struct PenBatch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+pub enum TouchPhase {
+    Down = 1,
+    Move = 2,
+    Up = 3,
+    /// iPadOS took the touch away (e.g. a system gesture); not a lift.
+    Cancel = 4,
+}
+
+impl TouchPhase {
+    pub fn from_u8(v: u8) -> Result<Self, ProtocolError> {
+        Ok(match v {
+            1 => TouchPhase::Down,
+            2 => TouchPhase::Move,
+            3 => TouchPhase::Up,
+            4 => TouchPhase::Cancel,
+            _ => {
+                return Err(ProtocolError::BadValue {
+                    field: "touch phase",
+                    value: v as u32,
+                })
+            }
+        })
+    }
+}
+
+/// One finger on the iPad's screen (the pencil goes in PenSample).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchSample {
+    /// iPad clock, as PenSample::timestamp_ns.
+    pub timestamp_ns: u64,
+    /// Stable from Down to Up/Cancel; may be reused afterwards.
+    pub id: u16,
+    pub phase: TouchPhase,
+    /// `sample_flags::COALESCED` only, so far.
+    pub flags: u8,
+    /// Normalised [0,1] across the surface, as PenSample.
+    pub x: f32,
+    pub y: f32,
+    /// `UITouch.majorRadius` in points: a palm is much larger than a finger.
+    pub major_radius_pt: f32,
+}
+
+impl TouchSample {
+    pub const WIRE_LEN: usize = 24;
+
+    fn write(&self, w: &mut Writer) {
+        w.u64(self.timestamp_ns);
+        w.u16(self.id);
+        w.u8(self.phase as u8);
+        w.u8(self.flags);
+        w.f32(self.x);
+        w.f32(self.y);
+        w.f32(self.major_radius_pt);
+    }
+
+    fn read(r: &mut Reader) -> Result<Self, ProtocolError> {
+        Ok(TouchSample {
+            timestamp_ns: r.u64()?,
+            id: r.u16()?,
+            phase: TouchPhase::from_u8(r.u8()?)?,
+            flags: r.u8()?,
+            x: r.f32()?,
+            y: r.f32()?,
+            major_radius_pt: r.f32()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TouchBatch {
+    /// iPad clock when the batch was handed to the network stack.
+    pub send_time_ns: u64,
+    pub touches: Vec<TouchSample>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum GestureKind {
     DoubleTap = 1,
     Squeeze = 2,
@@ -436,6 +516,7 @@ pub enum Message {
     PenBatch(PenBatch),
     PencilGesture(PencilGesture),
     SurfaceInfo(SurfaceInfo),
+    TouchBatch(TouchBatch),
     Haptic(Haptic),
     MappingInfo(MappingInfo),
     Ping(Ping),
@@ -480,6 +561,7 @@ impl Message {
             Message::PenBatch(_) => ty::PEN_BATCH,
             Message::PencilGesture(_) => ty::PENCIL_GESTURE,
             Message::SurfaceInfo(_) => ty::SURFACE_INFO,
+            Message::TouchBatch(_) => ty::TOUCH_BATCH,
             Message::Haptic(_) => ty::HAPTIC,
             Message::MappingInfo(_) => ty::MAPPING_INFO,
             Message::Ping(_) => ty::PING,
@@ -554,6 +636,14 @@ impl Message {
                 w.f32(p.roll);
             }
             Message::SurfaceInfo(s) => write_surface(&mut w, s),
+            Message::TouchBatch(b) => {
+                w.u64(b.send_time_ns);
+                w.u16(b.touches.len() as u16);
+                w.u16(TouchSample::WIRE_LEN as u16);
+                for t in &b.touches {
+                    t.write(&mut w);
+                }
+            }
             Message::Haptic(h) => {
                 w.u8(h.kind as u8);
                 w.u8(0);
@@ -696,6 +786,27 @@ impl Message {
                 Message::PenBatch(PenBatch {
                     send_time_ns,
                     samples,
+                })
+            }
+            ty::TOUCH_BATCH => {
+                let send_time_ns = r.u64()?;
+                let count = r.u16()? as usize;
+                let touch_len = r.u16()? as usize;
+                if touch_len < TouchSample::WIRE_LEN {
+                    return Err(ProtocolError::BadValue {
+                        field: "touch_len",
+                        value: touch_len as u32,
+                    });
+                }
+                let mut touches = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let raw = r.bytes(touch_len)?;
+                    let mut tr = Reader::new(ty, &raw[..TouchSample::WIRE_LEN]);
+                    touches.push(TouchSample::read(&mut tr)?);
+                }
+                Message::TouchBatch(TouchBatch {
+                    send_time_ns,
+                    touches,
                 })
             }
             ty::PENCIL_GESTURE => {
