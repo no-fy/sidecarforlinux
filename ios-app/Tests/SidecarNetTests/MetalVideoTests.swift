@@ -416,7 +416,7 @@ final class MetalVideoTests: XCTestCase {
     /// for it, is up to the runner, so this checks the bookkeeping (every
     /// frame reported exactly once, consistent times, layer settings) and
     /// prints what happened; presentation proper needs an iPad.
-    func exerciseSink(_ mode: MetalPresentMode, switchTo second: MetalPresentMode? = nil) throws {
+    func exerciseSink(_ mode: MetalPresentMode, switchTo later: [MetalPresentMode] = []) throws {
         let device = try metalDevice()
         let (config, frames) = try vector()
         let layer = CAMetalLayer()
@@ -434,10 +434,13 @@ final class MetalVideoTests: XCTestCase {
         layer.drawableSize = CGSize(width: 176, height: 144)
         let log = FeedbackLog()
         sink.configure(config)
+        // Switch every couple of frames, through `later` in order.
+        let step = later.isEmpty ? Int.max : max(1, frames.count / (later.count + 1))
         for (i, f) in frames.enumerated() {
-            if let second, i == frames.count / 2 {
-                sink.setMode(second)
-                checkLayer(second)
+            if i > 0, i % step == 0, i / step <= later.count {
+                let next = later[i / step - 1]
+                sink.setMode(next)
+                checkLayer(next)
             }
             sink.enqueue(f, receivedNs: SessionClock.nowNs(), report: log.add)
             usleep(20_000)
@@ -454,7 +457,7 @@ final class MetalVideoTests: XCTestCase {
         while log.all.count < frames.count && Date() < deadline { usleep(10_000) }
         let fb = log.all
         let shown = fb.filter { $0.displayedNs != 0 }
-        let name = mode.rawValue + (second.map { " -> \($0.rawValue)" } ?? "")
+        let name = ([mode] + later).map(\.rawValue).joined(separator: " -> ")
         print("Metal sink (\(name)): \(fb.count)/\(frames.count) reported, \(shown.count) presented, " +
               "errors \(errors.value), readouts \(stats.value)")
         XCTAssertEqual(Set(fb.map(\.frameID)).count, fb.count, "no frame reported twice")
@@ -470,7 +473,11 @@ final class MetalVideoTests: XCTestCase {
     func testMetalSinkDisplayLinkMode() throws { try exerciseSink(.displayLink) }
     func testMetalSinkUIUpdateMode() throws { try exerciseSink(.uiUpdate) }
     func testMetalSinkImmediateMode() throws { try exerciseSink(.immediate) }
-    func testMetalSinkSwitchesModeMidStream() throws { try exerciseSink(.displayLink, switchTo: .immediate) }
+    /// Every transition into and out of the display link (the layer refuses
+    /// some changes while a display link drives it).
+    func testMetalSinkSwitchesModesMidStream() throws {
+        try exerciseSink(.displayLink, switchTo: [.immediate, .displayLink, .uiUpdate, .displayLink])
+    }
 
     // MARK: on-iPad readout
 

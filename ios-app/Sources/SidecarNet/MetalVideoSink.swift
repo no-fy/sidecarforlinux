@@ -63,6 +63,10 @@ public final class MetalVideoSink: VideoFrameSink, @unchecked Sendable {
     private var lastError: String?
     private var window = PresentWindow()
     private var windowStartNs: UInt64 = 0
+    /// Held while the layer is reconfigured (mode switch, display link on or
+    /// off) and around manual `nextDrawable()` calls, so a drawable is never
+    /// taken by hand while a display link owns the layer.
+    private let layerLock = NSLock()
     // Guarded by `drawLock`: one frame is drawn at a time, whichever thread.
     private let drawLock = NSLock()
     private var renderer: VideoRenderer?
@@ -112,7 +116,9 @@ public final class MetalVideoSink: VideoFrameSink, @unchecked Sendable {
     public func setActive(_ on: Bool) {
         guard on != active else { return }
         active = on
+        layerLock.lock()
         updateDisplayLink()
+        layerLock.unlock()
     }
 
     public var mode: MetalPresentMode {
@@ -170,7 +176,10 @@ public final class MetalVideoSink: VideoFrameSink, @unchecked Sendable {
     /// `immediateExpected`: what UIUpdateInfo says about this update.
     public func presentForUIUpdate(target: CFTimeInterval?, immediateExpected: Bool) {
         guard mode == .uiUpdate, !isPaused, canPresentWithoutBlocking(), let frame = pacedSlot.poll() else { return }
-        guard let drawable = layer.nextDrawable() else {
+        layerLock.lock()
+        let drawable = mode == .uiUpdate ? layer.nextDrawable() : nil
+        layerLock.unlock()
+        guard let drawable else {
             notify("no drawable (is the video view on screen?)")
             return frame.finish(displayedNs: 0)
         }
@@ -180,6 +189,12 @@ public final class MetalVideoSink: VideoFrameSink, @unchecked Sendable {
     // MARK: internals
 
     private func applyMode(_ mode: MetalPresentMode) {
+        layerLock.lock()
+        defer { layerLock.unlock() }
+        // CAMetalLayer throws (CAMetalLayerInvalidOperation) if its drawable
+        // count changes while a CAMetalDisplayLink drives it: detach the link
+        // first, and wait until it's gone.
+        displayLink?.stop()
         // Round 1 used two drawables: one on screen, one being drawn. The
         // paced modes draw at most one frame per refresh, so a third drawable
         // can't queue frames; it only keeps the link from stalling.
@@ -232,7 +247,10 @@ public final class MetalVideoSink: VideoFrameSink, @unchecked Sendable {
             autoreleasepool {
                 guard mode == .immediate, !isPaused else { return frame.finish(displayedNs: 0) }
                 // Waits while both drawables are in use (up to one display refresh).
-                guard let drawable = layer.nextDrawable() else {
+                layerLock.lock()
+                let drawable = mode == .immediate ? layer.nextDrawable() : nil
+                layerLock.unlock()
+                guard let drawable else {
                     notify("no drawable (is the video view on screen?)")
                     return frame.finish(displayedNs: 0)
                 }
@@ -364,8 +382,10 @@ final class DisplayLinkThread: NSObject, CAMetalDisplayLinkDelegate, @unchecked 
         ready.wait()
     }
 
+    /// Both block until done on the link's thread, so the layer can be
+    /// reconfigured safely afterwards. Call from the main thread.
     func start(layer: CAMetalLayer) {
-        perform {
+        performAndWait {
             guard self.link == nil else { return }
             let l = CAMetalDisplayLink(metalLayer: layer)
             // Ask for the shortest render window Core Animation offers (1 or 2 frames).
@@ -377,16 +397,21 @@ final class DisplayLinkThread: NSObject, CAMetalDisplayLinkDelegate, @unchecked 
     }
 
     func stop() {
-        perform {
+        performAndWait {
             self.link?.invalidate()
             self.link = nil
         }
     }
 
-    private func perform(_ f: @escaping () -> Void) {
+    private func performAndWait(_ f: @escaping () -> Void) {
         guard let runLoop else { return }
-        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.defaultMode.rawValue, f)
+        let done = DispatchSemaphore(value: 0)
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.defaultMode.rawValue) {
+            f()
+            done.signal()
+        }
         CFRunLoopWakeUp(runLoop)
+        done.wait()
     }
 
     func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
