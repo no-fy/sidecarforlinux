@@ -344,6 +344,7 @@ pub async fn run_video(
     let mut sent_at: std::collections::VecDeque<(u32, u64)> = std::collections::VecDeque::new();
     let mut lat = crate::clock::LatencyStats::new(10_000);
     let mut input_lat = crate::clock::LatencyStats::new(1_000);
+    let mut ipad_lat = crate::videostats::IpadVideoLatency::new();
     let mut last_log = tokio::time::Instant::now();
     let result = loop {
         tokio::select! {
@@ -375,9 +376,9 @@ pub async fn run_video(
                 Ok(Some(Message::VideoFeedback(fb))) => {
                     stats.feedback += 1;
                     let offset = clock_offset.as_ref().and_then(|r| *r.borrow());
-                    if let (Some(off), Some(&(_, t_out))) =
-                        (offset, sent_at.iter().find(|(id, _)| *id == fb.frame_id))
-                    {
+                    let t_out = sent_at.iter().find(|(id, _)| *id == fb.frame_id).map(|&(_, t)| t);
+                    ipad_lat.push(&fb, t_out, offset);
+                    if let (Some(off), Some(t_out)) = (offset, t_out) {
                         lat.push_ns(fb.received_ns as i64 - off - t_out as i64);
                         if last_log.elapsed() >= Duration::from_secs(10) {
                             last_log = tokio::time::Instant::now();
@@ -386,6 +387,10 @@ pub async fn run_video(
                                 "video latency (encoder out -> iPad received) p50 {:.1} ms p95 {:.1} ms over {} frames",
                                 r.p50_us as f64 / 1000.0, r.p95_us as f64 / 1000.0, r.samples
                             );
+                            if let Some(s) = ipad_lat.summary() {
+                                tracing::info!("{s}");
+                            }
+                            ipad_lat.clear();
                             let r = input_lat.report(None);
                             if r.samples > 0 {
                                 tracing::info!(
@@ -408,6 +413,9 @@ pub async fn run_video(
     };
     producer.0.abort();
     wr.shutdown().await;
+    if let Some(s) = ipad_lat.summary() {
+        tracing::info!("{s}");
+    }
     let r = lat.report(None);
     stats.transport_p50_us = r.p50_us;
     stats.transport_p95_us = r.p95_us;
